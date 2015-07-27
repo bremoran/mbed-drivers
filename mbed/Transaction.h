@@ -18,19 +18,21 @@
 
 #include "platform.h"
 #include "FunctionPointer.h"
+#include "minar/minar.h"
 
+using minar::callback_handle_t;
 namespace mbed {
 
 /** Transaction structure
  */
 typedef struct {
-    void *tx_buffer;           /**< Tx buffer */
-    size_t tx_length;          /**< Length of Tx buffer*/
-    void *rx_buffer;           /**< Rx buffer */
-    size_t rx_length;          /**< Length of Rx buffer */
-    uint32_t event;            /**< Event for a transaction */
-    event_callback_t callback; /**< User's callback */
-    uint8_t width;             /**< Buffer's word width (8, 16, 32, 64) */
+    void *tx_buffer;                /**< Tx buffer */
+    size_t tx_length;               /**< Length of Tx buffer*/
+    void *rx_buffer;                /**< Rx buffer */
+    size_t rx_length;               /**< Length of Rx buffer */
+    uint32_t event;                 /**< Event for a transaction */
+    callback_handle_t callback;     /**< User's callback */
+    uint8_t width;                  /**< Buffer's word width (8, 16, 32, 64) */
 } transaction_t;
 
 /** Transaction class defines a transaction.

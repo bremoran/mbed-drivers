@@ -58,7 +58,18 @@ public:
         printf("Starting short transfer test\r\n");
         init_rx_buffer();
         cs = 0;
-        printf("Res is %d\r\n", spi.transfer(tx_buf, SHORT_XFR, rx_buf, SHORT_XFR, event_callback_t(this, &SPITest::short_transfer_complete_cb), SPI_EVENT_COMPLETE));
+        printf("Res is %d\r\n", spi.transfer(tx_buf, SHORT_XFR, rx_buf, SHORT_XFR, SPI_EVENT_COMPLETE));
+        cs = 1;
+        printf("Short transfer DONE\r\n");
+        compare_buffers(SHORT_XFR);
+        printf("Starting long transfer test");
+        init_rx_buffer();
+        cs = 0;
+        printf("Res is %d\r\n", spi.transfer(tx_buf, LONG_XFR, rx_buf, LONG_XFR, SPI_EVENT_COMPLETE));
+        cs = 1;
+        printf("Long transfer DONE\r\n");
+        compare_buffers(LONG_XFR);
+        printf("**** Test done ****\r\n");
     }
 
 private:
@@ -74,16 +85,6 @@ private:
                 printf("MISMATCH at position %u: expected %d, got %d\r\n", i, (int)tx_buf[i], (int)rx_buf[i]);
             }
         }
-    }
-
-    void short_transfer_complete_cb(int narg) {
-        cs = 1;
-        printf("Short transfer DONE, event is %d\r\n", narg);
-        compare_buffers(SHORT_XFR);
-        printf("Starting long transfer test\r\n");
-        init_rx_buffer();
-        cs = 0;
-        printf("Res is %d\r\n", spi.transfer(tx_buf, LONG_XFR, rx_buf, LONG_XFR, event_callback_t(this, &SPITest::long_transfer_complete_cb), SPI_EVENT_COMPLETE));
     }
 
     void long_transfer_complete_cb(int narg) {

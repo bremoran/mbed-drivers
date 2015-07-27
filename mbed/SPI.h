@@ -110,44 +110,17 @@ public:
      * @param rx_buffer The RX buffer which is used for received data. If NULL is passed,
      *                  received data are ignored
      * @param rx_length The length of RX buffer
-     * @param callback  The event callback function
      * @param event     The logical OR of events to modify
      * @return Zero if the transfer has started, or -1 if SPI peripheral is busy
      */
-    virtual int transfer(uint8_t *tx_buffer, int tx_length, uint8_t *rx_buffer, int rx_length, const event_callback_t& callback, int event = SPI_EVENT_COMPLETE) {
-        return transfer(tx_buffer, tx_length, rx_buffer, rx_length, 8, callback, event);
+    virtual int transfer(uint8_t *tx_buffer, int tx_length, uint8_t *rx_buffer, int rx_length, int event = SPI_EVENT_COMPLETE) {
+        return transfer(tx_buffer, tx_length, rx_buffer, rx_length, 8, event);
     }
-
-    /** Start non-blocking SPI transfer using 16bit buffers.
-     *
-     * @param tx_buffer The TX buffer with data to be transfered. If NULL is passed,
-     *                  the default SPI value is sent
-     * @param tx_length The length of TX buffer
-     * @param rx_buffer The RX buffer which is used for received data. If NULL is passed,
-     *                  received data are ignored
-     * @param rx_length The length of RX buffer
-     * @param callback  The event callback function
-     * @param event     The logical OR of events to modify
-     * @return Zero if the transfer has started, or -1 if SPI peripheral is busy
-     */
-    virtual int transfer(uint16_t *tx_buffer, int tx_length, uint16_t *rx_buffer, int rx_length, const event_callback_t& callback, int event = SPI_EVENT_COMPLETE) {
-        return transfer(tx_buffer, tx_length, rx_buffer, rx_length, 16, callback, event);
+    virtual int transfer(uint16_t *tx_buffer, int tx_length, uint16_t *rx_buffer, int rx_length, int event = SPI_EVENT_COMPLETE) {
+        return transfer(tx_buffer, tx_length, rx_buffer, rx_length, 16, event);
     }
-
-    /** Start non-blocking SPI transfer using 32bit buffers.
-     *
-     * @param tx_buffer The TX buffer with data to be transfered. If NULL is passed,
-     *                  the default SPI value is sent
-     * @param tx_length The length of TX buffer
-     * @param rx_buffer The RX buffer which is used for received data. If NULL is passed,
-     *                  received data are ignored
-     * @param rx_length The length of RX buffer
-     * @param callback  The event callback function
-     * @param event     The logical OR of events to modify
-     * @return Zero if the transfer has started, or -1 if SPI peripheral is busy
-     */
-    virtual int transfer(uint32_t *tx_buffer, int tx_length, uint32_t *rx_buffer, int rx_length, const event_callback_t& callback, int event = SPI_EVENT_COMPLETE)  {
-        return transfer((void *)tx_buffer, tx_length, (void *)rx_buffer, rx_length, 32, callback, event);
+    virtual int transfer(uint32_t *tx_buffer, int tx_length, uint32_t *rx_buffer, int rx_length, int event = SPI_EVENT_COMPLETE) {
+        return transfer(tx_buffer, tx_length, rx_buffer, rx_length, 32, event);
     }
 
     /** Abort the on-going SPI transfer, and continue with transfer's in the queue if any.
@@ -188,7 +161,7 @@ protected:
      * @param event     The logical OR of events to modify
      * @return Zero if the transfer has started or was added to the queue, or -1 if SPI peripheral is busy/buffer is full
     */
-    int transfer(void *tx_buffer, int tx_length, void *rx_buffer, int rx_length, unsigned char bit_width, const event_callback_t& callback, int event);
+    int transfer(void *tx_buffer, int tx_length, void *rx_buffer, int rx_length, unsigned char bit_width, int event);
 
     /**
      *
@@ -203,7 +176,7 @@ protected:
      * @param event     The logical OR of events to modify
      * @return Zero if a transfer was added to the queue, or -1 if the queue is full
     */
-    int queue_transfer(void *tx_buffer, int tx_length, void *rx_buffer, int rx_length, unsigned char bit_width, const event_callback_t& callback, int event);
+    int queue_transfer(void *tx_buffer, int tx_length, void *rx_buffer, int rx_length, unsigned char bit_width, int event);
 
     /** Configures a callback, spi peripheral and initiate a new transfer
      *
@@ -217,7 +190,7 @@ protected:
      * @param callback  The event callback function
      * @param event     The logical OR of events to modify
     */
-    void start_transfer(void *tx_buffer, int tx_length, void *rx_buffer, int rx_length, unsigned char bit_width, const event_callback_t& callback, int event);
+    void start_transfer(void *tx_buffer, int tx_length, void *rx_buffer, int rx_length, unsigned char bit_width, callback_handle_t callback, int event);
 
 #if TRANSACTION_QUEUE_SIZE_SPI
 
@@ -245,8 +218,8 @@ protected:
 
 #if DEVICE_SPI_ASYNCH
     CThunk<SPI> _irq;
-    event_callback_t _callback;
     DMAUsage _usage;
+    callback_handle_t _current;
 #endif
 
     void aquire(void);
