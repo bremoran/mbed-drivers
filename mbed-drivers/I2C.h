@@ -144,6 +144,35 @@ public:
      */
     typedef mbed::util::FunctionPointer3<void, Buffer, Buffer, int> event_callback_t;
 
+    class TransferAdder {
+        friend I2C;
+    private:
+        TransferAdder(I2C *i2c, int address);
+        TransferAdder(I2C *i2c);
+        TransferAdder(const TransferAdder &adder);
+        const TransferAdder & operator =(const TransferAdder &adder);
+    public:
+        TransferAdder & rx(uint8_t *buf, size_t len);
+        TransferAdder & tx(uint8_t *buf, size_t len);
+        TransferAdder & callback(const event_callback_t& callback, int event = I2C_EVENT_TRANSFER_COMPLETE);
+        TransferAdder & repreatedStart();
+        int apply();
+        ~TransferAdder();
+    private:
+        int _address;
+        Buffer _tx_buf;
+        Buffer _rx_buf;
+        const event_callback_t *_callback;
+        int _event;
+        bool _repeated;
+        I2C* _i2c;
+        bool _posted;
+        int _rc;
+    };
+
+    TransferAdder transfer(int address);
+
+protected:
     /** Start non-blocking I2C transfer.
      *
      * @param address   8/10 bit I2c slave address
@@ -157,8 +186,7 @@ public:
      * @return Zero if the transfer has started, or -1 if I2C peripheral is busy
      */
     int transfer(int address, char *tx_buffer, int tx_length, char *rx_buffer, int rx_length, const event_callback_t& callback, int event = I2C_EVENT_TRANSFER_COMPLETE, bool repeated = false);
-
-     /** Start non-blocking I2C transfer.
+    /** Start non-blocking I2C transfer.
      *
      * @param address   8/10 bit I2c slave address
      * @param tx_buffer The TX buffer with data to be transfered
@@ -190,6 +218,7 @@ protected:
     static I2C  *_owner;
     int         _hz;
 };
+
 
 } // namespace mbed
 
