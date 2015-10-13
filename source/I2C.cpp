@@ -93,6 +93,61 @@ void I2C::stop(void) {
 
 #if DEVICE_I2C_ASYNCH
 
+I2C::TransferAdder::TransferAdder(I2C *i2c, int address) :
+    _address(address), _callback(NULL), _event(0), _repeated(false), _i2c(i2c), _posted(false), _rc(0)
+{}
+I2C::TransferAdder::TransferAdder(I2C *i2c) :
+_address(0), _callback(NULL), _event(0), _repeated(false), _i2c(i2c), _posted(false), _rc(0)
+{}
+I2C::TransferAdder::TransferAdder(const I2C::TransferAdder &adder) {
+    *this = adder;
+}
+const I2C::TransferAdder & I2C::TransferAdder::operator =(const I2C::TransferAdder &adder) {
+    _address = adder._address;
+    _callback = adder._callback;
+    _tx_buf = adder._tx_buf;
+    _rx_buf = adder._rx_buf;
+    _callback = adder._callback;
+    _event = adder._event;
+    _repeated = adder._repeated;
+    _i2c = adder._i2c;
+    _posted = false;
+    _rc = 0;
+    return *this;
+}
+I2C::TransferAdder & I2C::TransferAdder::rx(uint8_t *buf, size_t len) {
+    _tx_buf.buf = buf;
+    _tx_buf.length = len;
+    return *this;
+}
+I2C::TransferAdder & I2C::TransferAdder::tx(uint8_t *buf, size_t len) {
+    _rx_buf.buf = buf;
+    _rx_buf.length = len;
+    return *this;
+}
+I2C::TransferAdder & I2C::TransferAdder::callback(const event_callback_t& callback, int event)
+{
+    _callback = &callback;
+    _event = event;
+    return *this;
+}
+I2C::TransferAdder & I2C::TransferAdder::repreatedStart()
+{
+    _repeated = true;
+    return *this;
+}
+int I2C::TransferAdder::apply()
+{
+    if (! _posted) {
+        _rc = _i2c->transfer(_address, _tx_buf, _rx_buf, *_callback, _event, _repeated);
+    }
+    return _rc;
+}
+I2C::TransferAdder::~TransferAdder()
+{
+    apply();
+}
+
 int I2C::transfer(int address, char *tx_buffer, int tx_length, char *rx_buffer, int rx_length, const event_callback_t& callback, int event, bool repeated) {
     return transfer(address, Buffer(tx_buffer, tx_length), Buffer(rx_buffer, rx_length), callback, event, repeated);
 }
