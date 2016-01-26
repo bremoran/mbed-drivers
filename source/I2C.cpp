@@ -16,85 +16,141 @@
 #include "mbed-drivers/I2C.h"
 #include "minar/minar.h"
 
-#if DEVICE_I2C
+#if DEVICE_I2C && DEVICE_I2C_ASYNCH
+
+
+namespace mbed {
+namespace detail {
+extern I2CResourceManager * I2COwners[MODULES_SIZE_I2C] = {nullptr};
+// use a class instead of a structure so that we get the copy constructor for free.
+
+#ifdef YOTTA_CFG_MBED_DRIVERS_I2C_POOL_ELEMENTS
+#define I2C_TRANSACTION_POOL_ELEMENTS YOTTA_CFG_MBED_DRIVERS_I2C_POOL_ELEMENTS
+#else
+#define I2C_TRANSACTION_POOL_ELEMENTS 16
+#endif
+
+#define I2C_TRANSACTION_POOL_SIZE (I2C_TRANSACTION_POOL_ELEMENTS * sizeof(struct I2CTransaction));
+
+PoolAllocator I2CResourceManager::TransactionPool(
+    mbed_ualloc(I2C_TRANSACTION_POOL_SIZE,UALLOC_TRAITS_NEVER_FREE),
+    I2C_TRANSACTION_POOL_ELEMENTS,
+    sizeof(struct I2CTransaction)
+);
+
+int I2CResourceManager::post_transaction(const I2CTransaction &transaction) {
+    // Allocate a new transaction.
+    I2CTransaction * newtx = TransactionPool.allocate();
+    if (newtx == nullptr) {
+        return -1;
+    }
+    new(newtx) I2CTransaction(transaction);
+    newtx->next = nullptr;
+    mbed::util::CriticalSectionLock lock;
+    // Find the tail of the queue
+    I2CTransaction * tx = TransactionQueue;
+    if (!tx) {
+        TransactionQueue = newtx;
+        start_transaction();
+        return 0;
+    }
+    while (tx->next) {
+        tx = tx->next;
+    }
+    tx->next = newtx;
+    return 0;
+}
+
+void I2CResourceManager::process_event(int event) {
+    I2CTransaction * t;
+    CORE_UTIL_ASSERT(TransactionQueue != nullptr);
+    if (!TransactionQueue) {
+        return;
+    }
+    {
+        CriticalSectionLock lock;
+        t = TransactionQueue;
+        TransactionQueue = t->next;
+        if(TransactionQueue) {
+            start_transaction();
+        }
+    }
+    if (t->event & event) {
+        t->callback(t->tx, t->rx, event);
+    }
+    TransactionPool.free(t);
+}
+
+I2CResourceManager::I2CResourceManager() : TransactionQueue(nullptr) {}
+I2CResourceManager::~I2CResourceManager() {
+    while (TransactionQueue) {
+        I2CTransaction * tx = TransactionQueue;
+        TransactionQueue = tx->next;
+        TransactionPool.free(tx);
+    }
+}
+
+class HWI2CResourceManager : public I2CResourceManager {
+public:
+    HWI2CResourceManager(size_t id):
+        id(id),
+        _usage(DMA_USAGE_NEVER),
+        _i2c()
+    {
+        CORE_UTIL_ASSERT(I2COwners[id] == nullptr);
+        I2COwners[id] = this;
+
+        // The init function also set the frequency to 100000
+        i2c_init(&_i2c, sda, scl);
+    }
+    int start_transaction() {
+        if (i2c_active(&_i2c)) {
+            return -1; // transaction ongoing
+        }
+        CriticalSectionLock lock;
+        I2CTransaction * t = TransactionQueue;
+
+        // We want to update the frequency even if we are already the bus owners
+        i2c_frequency(&_i2c, t.hz);
+
+        int stop = (t.repeated) ? 0 : 1;
+        i2c_transfer_asynch(&_i2c, t.tx.buf, t.tx.length, t.rx.buf, t.rx.length, t.address,
+            stop, &irq_handler_asynch<id>, t.event, _usage);
+        return 0;
+    }
+    int validate_transaction(I2CTransaction &transaction)
+    {
+        return 0; // TODO
+    }
+    template <const size_t ID>
+    static void irq_handler_asynch(void)
+    {
+        HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(I2COwners[ID]);
+        int event = i2c_irq_handler_asynch(&(rm->_i2c));
+        rm->process_event(event);
+    }
+protected:
+    i2c_t _i2c;
+    const size_t id;
+    DMAUsage _usage;
+};
+
+} // namespace detail
+} // namespace mbed
 
 namespace mbed {
 
-I2C *I2C::_owner = NULL;
-
 I2C::I2C(PinName sda, PinName scl) :
-#if DEVICE_I2C_ASYNCH
-                                     _irq(this), _usage(DMA_USAGE_NEVER),
-#endif
-                                      _i2c(), _hz(100000) {
-    // The init function also set the frequency to 100000
-    i2c_init(&_i2c, sda, scl);
+    _hz(100000)
+{}
 
-    // Used to avoid unnecessary frequency updates
-    _owner = this;
-}
-
-void I2C::frequency(int hz) {
+void I2C::frequency(int hz)
+{
     _hz = hz;
-
-    // We want to update the frequency even if we are already the bus owners
-    i2c_frequency(&_i2c, _hz);
-
-    // Updating the frequency of the bus we become the owners of it
-    _owner = this;
 }
-
-void I2C::aquire() {
-    if (_owner != this) {
-        i2c_frequency(&_i2c, _hz);
-        _owner = this;
-    }
-}
-
-// write - Master Transmitter Mode
-int I2C::write(int address, const char* data, int length, bool repeated) {
-    aquire();
-
-    int stop = (repeated) ? 0 : 1;
-    int written = i2c_write(&_i2c, address, data, length, stop);
-
-    return length != written;
-}
-
-int I2C::write(int data) {
-    return i2c_byte_write(&_i2c, data);
-}
-
-// read - Master Reciever Mode
-int I2C::read(int address, char* data, int length, bool repeated) {
-    aquire();
-
-    int stop = (repeated) ? 0 : 1;
-    int read = i2c_read(&_i2c, address, data, length, stop);
-
-    return length != read;
-}
-
-int I2C::read(int ack) {
-    if (ack) {
-        return i2c_byte_read(&_i2c, 0);
-    } else {
-        return i2c_byte_read(&_i2c, 1);
-    }
-}
-
-void I2C::start(void) {
-    i2c_start(&_i2c);
-}
-
-void I2C::stop(void) {
-    i2c_stop(&_i2c);
-}
-
-#if DEVICE_I2C_ASYNCH
 
 I2C::TransferAdder::TransferAdder(I2C *i2c, int address) :
-    _address(address), _callback(NULL), _event(0), _repeated(false), _i2c(i2c), _posted(false), _rc(0)
+    _address(address), _callback(NULL), _event(0), _repeated(false), _i2c(i2c), _posted(false), _rc(0), _hz
 {}
 I2C::TransferAdder::TransferAdder(I2C *i2c) :
 _address(0), _callback(NULL), _event(0), _repeated(false), _i2c(i2c), _posted(false), _rc(0)
@@ -147,40 +203,6 @@ I2C::TransferAdder::~TransferAdder()
 {
     apply();
 }
-
-int I2C::transfer(int address, char *tx_buffer, int tx_length, char *rx_buffer, int rx_length, const event_callback_t& callback, int event, bool repeated) {
-    return transfer(address, Buffer(tx_buffer, tx_length), Buffer(rx_buffer, rx_length), callback, event, repeated);
-}
-
-int I2C::transfer(int address, const Buffer& tx_buffer, const Buffer& rx_buffer, const event_callback_t& callback, int event, bool repeated) {
-    if (i2c_active(&_i2c)) {
-        return -1; // transaction ongoing
-    }
-    aquire();
-
-    _current_transaction.tx_buffer = tx_buffer;
-    _current_transaction.rx_buffer = rx_buffer;
-    _current_transaction.callback = callback;
-    int stop = (repeated) ? 0 : 1;
-    _irq.callback(&I2C::irq_handler_asynch);
-    i2c_transfer_asynch(&_i2c, tx_buffer.buf, tx_buffer.length, rx_buffer.buf, rx_buffer.length, address, stop, _irq.entry(), event, _usage);
-    return 0;
-}
-
-void I2C::abort_transfer(void)
-{
-    i2c_abort_asynch(&_i2c);
-}
-
-void I2C::irq_handler_asynch(void)
-{
-    int event = i2c_irq_handler_asynch(&_i2c);
-    if (_current_transaction.callback && event) {
-        minar::Scheduler::postCallback(_current_transaction.callback.bind(_current_transaction.tx_buffer, _current_transaction.rx_buffer, event));
-    }
-
-}
-
 
 #endif
 
