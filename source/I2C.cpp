@@ -106,7 +106,15 @@ public:
         I2COwners[id] = this;
 
         // The init function also set the frequency to 100000
-        i2c_init(&_i2c, sda, scl);
+    }
+    int init(PinName sda, PinName scl) {
+        if (!inited) {
+            i2c_init(&_i2c, sda, scl);
+        } else {
+            // TODO:
+            //pin_function?
+        }
+
     }
     int start_transaction() {
         if (i2c_active(&_i2c)) {
@@ -159,7 +167,13 @@ namespace mbed {
 
 I2C::I2C(PinName sda, PinName scl) :
     _hz(100000)
-{}
+{
+    // Select the appropriate I2C Resource Manager
+    uint32_t i2c_sda = pinmap_peripheral(sda, PinMap_I2C_SDA);
+    uint32_t i2c_scl = pinmap_peripheral(scl, PinMap_I2C_SCL);
+    ownerID = pinmap_merge(i2c_sda, i2c_scl);
+    I2COwners[ownerID]->init(sda, scl)
+}
 
 void I2C::frequency(int hz)
 {

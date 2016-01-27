@@ -58,6 +58,12 @@ namespace detail {
  */
 class I2CTransaction {
 public:
+    /** I2C transfer callback
+     *  @param Buffer the tx buffer
+     *  @param Buffer the rx buffer
+     *  @param int the event that triggered the calback
+     */
+    typedef mbed::util::FunctionPointer3<void, Buffer, Buffer, int> event_callback_t;
     I2CTransaction():
         next(nullptr), address(0), callback(nullptr), event(0), hz(100000), repeated(false)
     {}
@@ -101,8 +107,12 @@ public:
     I2CResourceManager(I2CResourceManager&&) = delete;
     operator =(const I2CResourceManager&) = delete;
     operator =(I2CResourceManager&&) = delete;
+    /* Initialize the I/O pins
+     * While the resource manager is initialized statically, it may need runtime initialization as well.
+     */
+    virtual int init(PinName sda, PinName scl) = 0;
+
     /* Add a transaction to the transaction queue of the associated logical I2C port
-     * This is the single user-facing API of the I2C Resource manager.
      *
      * If the peripheral is idle, calls power_up()
      * @param[in] transaction Queue this transaction
@@ -183,12 +193,6 @@ public:
      */
     void frequency(int hz);
 
-    /** I2C transfer callback
-     *  @param Buffer the tx buffer
-     *  @param Buffer the rx buffer
-     *  @param int the event that triggered the calback
-     */
-    typedef mbed::util::FunctionPointer3<void, Buffer, Buffer, int> event_callback_t;
 
     class TransferAdder {
         friend I2C;
@@ -203,7 +207,8 @@ public:
         TransferAdder & rx(Buffer buf);
         TransferAdder & tx(Buffer buf);
         TransferAdder & frequency(uint32_t hz);
-        TransferAdder & callback(const event_callback_t& callback, int event = I2C_EVENT_TRANSFER_COMPLETE);
+        TransferAdder & callback(const detail::I2CTransaction::event_callback_t& callback,
+            int event = I2C_EVENT_TRANSFER_COMPLETE);
         TransferAdder & repreated_start();
         int apply();
         ~TransferAdder();
@@ -218,6 +223,7 @@ public:
 
 protected:
     int _hz;
+    size_t ownerID;
 };
 
 } // namespace mbed
