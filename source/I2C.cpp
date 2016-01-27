@@ -21,13 +21,15 @@
 
 namespace mbed {
 namespace detail {
-extern I2CResourceManager * I2COwners[MODULES_SIZE_I2C] = {nullptr};
+// TODO: Increase the size of I2COwners to accept Resource Mangers for non-onchip I2C masters
+I2CResourceManager * I2COwners[MODULES_SIZE_I2C] = {nullptr};
+
 // use a class instead of a structure so that we get the copy constructor for free.
 
 #ifdef YOTTA_CFG_MBED_DRIVERS_I2C_POOL_ELEMENTS
 #define I2C_TRANSACTION_POOL_ELEMENTS YOTTA_CFG_MBED_DRIVERS_I2C_POOL_ELEMENTS
 #else
-#define I2C_TRANSACTION_POOL_ELEMENTS 16
+#define I2C_TRANSACTION_POOL_ELEMENTS (MODULES_SIZE_I2C * 4)
 #endif
 
 #define I2C_TRANSACTION_POOL_SIZE (I2C_TRANSACTION_POOL_ELEMENTS * sizeof(struct I2CTransaction));
@@ -51,6 +53,7 @@ int I2CResourceManager::post_transaction(const I2CTransaction &transaction) {
     I2CTransaction * tx = TransactionQueue;
     if (!tx) {
         TransactionQueue = newtx;
+        power_up();
         start_transaction();
         return 0;
     }
@@ -73,6 +76,8 @@ void I2CResourceManager::process_event(int event) {
         TransactionQueue = t->next;
         if(TransactionQueue) {
             start_transaction();
+        } else {
+            power_down();
         }
     }
     if (t->event & event) {
@@ -120,7 +125,16 @@ public:
     }
     int validate_transaction(I2CTransaction &transaction)
     {
-        return 0; // TODO
+        // TODO
+        return 0;
+    }
+    int power_down() {
+        // TODO
+        return 0;
+    }
+    int power_up() {
+        // TODO
+        return 0;
     }
     template <const size_t ID>
     static void irq_handler_asynch(void)
@@ -134,6 +148,9 @@ protected:
     const size_t id;
     DMAUsage _usage;
 };
+
+/* Instantiate the HWI2CResourceManager */
+HWI2CResourceManager HWResourceOwners[MODULES_SIZE_I2C];
 
 } // namespace detail
 } // namespace mbed
