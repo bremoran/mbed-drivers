@@ -32,25 +32,48 @@ I2CResourceManager * I2COwners[MODULES_SIZE_I2C] = {nullptr};
 #define I2C_TRANSACTION_POOL_ELEMENTS (MODULES_SIZE_I2C * 4)
 #endif
 
-#define I2C_TRANSACTION_POOL_SIZE (I2C_TRANSACTION_POOL_ELEMENTS * sizeof(struct I2CTransaction));
+#define I2C_TRANSACTION_POOL_SIZE (I2C_TRANSACTION_POOL_ELEMENTS * sizeof(QueuedI2CTransaction));
 
 PoolAllocator I2CResourceManager::TransactionPool(
     mbed_ualloc(I2C_TRANSACTION_POOL_SIZE,UALLOC_TRAITS_NEVER_FREE),
     I2C_TRANSACTION_POOL_ELEMENTS,
-    sizeof(struct I2CTransaction)
+    sizeof(QueuedI2CTransaction)
 );
 
-int I2CResourceManager::post_transaction(const I2CTransaction &transaction) {
+class QueuedI2CTransaction : public I2CTransaction {
+public:
+    QueuedI2CTransaction() :
+        I2CTransaction(),
+        next(nullptr)
+    {}
+    QueuedI2CTransaction(const I2CTransaction& t) :
+        I2CTransaction(t),
+        next(nullptr)
+    {}
+    QueuedI2CTransaction(const QueuedI2CTransaction& t) :
+        I2CTransaction(t),
+        next(t.next)
+    {}
+public:
+    /** The next pointer is used to chain Transactions together into a queue */
+    volatile I2CTransaction * next;
+}
+
+int I2CResourceManager::post_transaction(const I2CTransaction &t) {
+    int rc;
+    if ((rc = validate_transaction(t))) {
+        return rc;
+    }
     // Allocate a new transaction.
-    I2CTransaction * newtx = TransactionPool.allocate();
+    QueuedI2CTransaction * newtx = TransactionPool.allocate();
     if (newtx == nullptr) {
         return -1;
     }
-    new(newtx) I2CTransaction(transaction);
-    newtx->next = nullptr;
+    new(newtx) QueuedI2CTransaction(t);
+    // Optimization NOTE: this could be lock-free.
     mbed::util::CriticalSectionLock lock;
     // Find the tail of the queue
-    I2CTransaction * tx = TransactionQueue;
+    QueuedI2CTransaction * tx = TransactionQueue;
     if (!tx) {
         TransactionQueue = newtx;
         power_up();
@@ -65,7 +88,7 @@ int I2CResourceManager::post_transaction(const I2CTransaction &transaction) {
 }
 
 void I2CResourceManager::process_event(int event) {
-    I2CTransaction * t;
+    QueuedI2CTransaction * t;
     CORE_UTIL_ASSERT(TransactionQueue != nullptr);
     if (!TransactionQueue) {
         return;
@@ -89,7 +112,7 @@ void I2CResourceManager::process_event(int event) {
 I2CResourceManager::I2CResourceManager() : TransactionQueue(nullptr) {}
 I2CResourceManager::~I2CResourceManager() {
     while (TransactionQueue) {
-        I2CTransaction * tx = TransactionQueue;
+        QueuedI2CTransaction * tx = TransactionQueue;
         TransactionQueue = tx->next;
         TransactionPool.free(tx);
     }
@@ -98,30 +121,35 @@ I2CResourceManager::~I2CResourceManager() {
 class HWI2CResourceManager : public I2CResourceManager {
 public:
     HWI2CResourceManager(size_t id):
-        id(id),
+        _id(id),
         _usage(DMA_USAGE_NEVER),
-        _i2c()
+        _i2c(),
+        _inited(false)
     {
         CORE_UTIL_ASSERT(I2COwners[id] == nullptr);
         I2COwners[id] = this;
-
-        // The init function also set the frequency to 100000
     }
     int init(PinName sda, PinName scl) {
-        if (!inited) {
+        // calling init during a transaction could cause communication artifacts
+        if (!_inited) {
+            // The init function also set the frequency to 100000
             i2c_init(&_i2c, sda, scl);
+            _inited = true;
         } else {
-            // TODO:
-            //pin_function?
+            // Only support an I2C master on a single pair of pins
+            if (_scl != scl || _sda != sda) {
+                return -1;
+            }
         }
-
+        return 0;
     }
     int start_transaction() {
+        // TODO: This needs a higher-level start/stop lock
         if (i2c_active(&_i2c)) {
             return -1; // transaction ongoing
         }
         CriticalSectionLock lock;
-        I2CTransaction * t = TransactionQueue;
+        QueuedI2CTransaction * t = TransactionQueue;
 
         // We want to update the frequency even if we are already the bus owners
         i2c_frequency(&_i2c, t.hz);
@@ -152,9 +180,12 @@ public:
         rm->process_event(event);
     }
 protected:
+    PinName _scl;
+    PinNamd _sda;
     i2c_t _i2c;
-    const size_t id;
+    const size_t _id;
     DMAUsage _usage;
+    bool _inited;
 };
 
 /* Instantiate the HWI2CResourceManager */
@@ -172,12 +203,22 @@ I2C::I2C(PinName sda, PinName scl) :
     uint32_t i2c_sda = pinmap_peripheral(sda, PinMap_I2C_SDA);
     uint32_t i2c_scl = pinmap_peripheral(scl, PinMap_I2C_SCL);
     ownerID = pinmap_merge(i2c_sda, i2c_scl);
-    I2COwners[ownerID]->init(sda, scl)
+    int rc = I2COwners[ownerID]->init(sda, scl);
+    if (rc) {
+        ownerID = (size_t) -1;
+    }
 }
 
 void I2C::frequency(int hz)
 {
     _hz = hz;
+}
+
+int I2C::post_transaction(const I2CTransaction & t) {
+    if (ownerID == (size_t) -1) {
+        return -1;
+    }
+    return I2COwners[ownerID]->post_transaction(t)
 }
 
 I2C::TransferAdder::TransferAdder(I2C *i2c, int address) :
@@ -226,7 +267,7 @@ I2C::TransferAdder & I2C::TransferAdder::repreatedStart()
 int I2C::TransferAdder::apply()
 {
     if (! _posted) {
-        _rc = _i2c->transfer(_address, _tx_buf, _rx_buf, *_callback, _event, _repeated);
+        _rc = _i2c->post_transaction(&xact);
     }
     return _rc;
 }
@@ -234,8 +275,6 @@ I2C::TransferAdder::~TransferAdder()
 {
     apply();
 }
-
-#endif
 
 } // namespace mbed
 
