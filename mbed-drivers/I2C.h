@@ -65,7 +65,7 @@ public:
      */
     typedef mbed::util::FunctionPointer3<void, Buffer, Buffer, int> event_callback_t;
     I2CTransaction():
-        next(nullptr), address(0), callback(nullptr), event(0), hz(100000), repeated(false)
+        address(0), callback(nullptr), event(0), hz(100000), repeated(false)
     {}
     /**
      * Construct an I2C transaction and set the destination address at the same time
@@ -73,21 +73,18 @@ public:
      * @param[in] address set the I2C destination address
      */
     I2CTransaction(uint16_t address):
-        next(nullptr), address(address), callback(nullptr), event(0), hz(100000), repeated(false)
+        address(address), callback(nullptr), event(0), hz(100000), repeated(false)
     {}
     /**
      * Copy an I2C transaction
      * Does not copy the next pointer or the callback pointer
      */
     I2CTransaction(const I2CTransaction & t):
-        next(nullptr), address(t.address),
+        address(t.address),
         tx(t.tx), rx(t.rx),
         callback(t.callback), event(t.event), hz(t.hz), repeated(t.repeated)
     {}
-    /* The next pointer is used to chain Transactions together into a queue.
-     * TODO: Should this be added as a wrapper class in the cpp file, since it's not relevant to the user-facing API?
-     */
-    volatile I2CTransaction * next;
+public:
     uint16_t address;          ///< The target I2C address to communicate with
     Buffer tx;                 ///< The buffer (```void *```/size pair) to send from
     Buffer rx;                 ///< The buffer (```void *```/size pair) to receive into
@@ -97,6 +94,7 @@ public:
     bool repeated;             ///< If repeated is true, do not generate a stop condition
 };
 
+class QueuedI2CTransaction;
 /**
  * The base resource manager class for I2C
  */
@@ -109,6 +107,7 @@ public:
     operator =(I2CResourceManager&&) = delete;
     /* Initialize the I/O pins
      * While the resource manager is initialized statically, it may need runtime initialization as well.
+     * init is called each time a new I2C
      */
     virtual int init(PinName sda, PinName scl) = 0;
 
@@ -144,7 +143,7 @@ protected:
     // A shared pool of transaction objects for all I2C resource managers
     static PoolAllocator TransactionPool;
     // The head of the transaction queue
-    volatile I2CTransaction * TransactionQueue;
+    volatile QueuedI2CTransaction * TransactionQueue;
 };
 } // namespace detail
 
@@ -220,6 +219,7 @@ public:
     };
 
     TransferAdder transfer_to(int address);
+    int post_transaction(const I2CTransaction & t);
 
 protected:
     int _hz;
