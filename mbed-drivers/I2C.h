@@ -49,21 +49,92 @@
  * * More...
  *
  * Currently only onchip I2C controllers are supported.
+ *
+ * ## Constructing I2C transactions
+ * To construct an I2C transaction with more than one segment, use the then member,
+ * or the repeated_start member, with a CriticalSectionLock:
+ *
+ * ```C++
+ * void doneCB(bool dir, I2CBuffer buf, int Event) {
+ *     // Do something
+ * }
+ * I2C i2c0(sda, scl);
+ * I2C i2c1(sda, scl);
+ * void app_start (int, char **) {
+ *     uint8_t cmd[2] = {0xaa, 0x55};
+ *     i2c0.transfer_to(addr).tx(cmd,2).then().rx(4).callback(doneCB, I2C_EVENT_ALL);
+ *     // OR
+ *     CriticalSectionLock lock;
+ *     i2c1.transfer_to(addr).tx(cmd,2).repeated_start();
+ *     i2c1.transfer_to(addr).rx(4).callback(doneCB, I2C_EVENT_ALL);
+ * }
+ * ```
+ *
+ * TODO: Use helpers to make it impossible to call rx or tx more than once on the same Transaction
  */
 
 namespace mbed {
+
+class I2CBuffer {
+public:
+    void set(const Buffer & b) {
+        set(b.buf,b.length);
+    }
+    void set(void * buf, size_t len) {
+        if (len <= sizeof(_packed.data)) {
+            _packed.small = true;
+            _packed.len = len;
+            if (buf) {
+                memcpy(_packed.data, buf, len);
+            }
+        } else {
+            _ref.len = len;
+            _ref.data = buf;
+        }
+    }
+    void * get_buf() {
+        if (_packed.small) {
+            return _packed.data;
+        } else {
+            return _ref.data;
+        }
+    }
+    size_t get_len() const {
+        if (_packed.small) {
+            return _packed.len;
+        } else {
+            return _ref.len;
+        }
+    }
+protected:
+    union {
+        struct {
+            void * data;
+            size_t len;
+        } _ref;
+        struct {
+            uint8_t data[sizeof(_ref)-1];
+            unsigned small:1;
+            unsigned len:7;
+        } _packed;
+    };
+};
+
 namespace detail {
+/**
+ */
+enum class I2CDirection {Transmit, Receive};
 /**
  * A Transaction container for I2C
  */
 class I2CTransaction {
 public:
     /** I2C transfer callback
-     *  @param Buffer the tx buffer
+     *  @param I2CDirection the direction of the transaction (true for tx or false for rx)
      *  @param Buffer the rx buffer
      *  @param int the event that triggered the calback
      */
-    typedef mbed::util::FunctionPointer3<void, Buffer, Buffer, int> event_callback_t;
+    typedef mbed::util::FunctionPointer3<void, I2CDirection, I2CBuffer, int> event_callback_t;
     I2CTransaction():
         address(0), callback(nullptr), event(0), hz(100000), repeated(false)
     {}
@@ -72,29 +143,40 @@ public:
      *
      * @param[in] address set the I2C destination address
      */
-    I2CTransaction(uint16_t address):
-        address(address), callback(nullptr), event(0), hz(100000), repeated(false)
+    I2CTransaction(uint16_t address, uint32_t hz):
+        address(address), callback(nullptr), event(0), hz(hz), repeated(false)
     {}
     /**
      * Copy an I2C transaction
      * Does not copy the next pointer or the callback pointer
      */
-    I2CTransaction(const I2CTransaction & t):
-        address(t.address),
-        tx(t.tx), rx(t.rx),
-        callback(t.callback), event(t.event), hz(t.hz), repeated(t.repeated)
-    {}
+    I2CTransaction(const I2CTransaction & t)
+    {
+        *this = t;
+    }
+    const I2CTransaction & operator = (const I2CTransaction & rhs)
+    {
+        next = nullptr;
+        address = rhs.address;
+        b = rhs.b;
+        dir = rhs.dir;
+        callback = rhs.callback;
+        event = rhs.event;
+        hz = rhs.hz;
+        repeated = rhs.repeated;
+        return *this;
+    }
 public:
+    I2CTransaction * next;     ///< NOTE: Should thie be volatile?
     uint16_t address;          ///< The target I2C address to communicate with
-    Buffer tx;                 ///< The buffer (```void *```/size pair) to send from
-    Buffer rx;                 ///< The buffer (```void *```/size pair) to receive into
+    I2CBuffer b;               ///< The buffer (```void *```/size pair) to receive into or transmit from
+    I2CDirection dir;          ///< The direction of the transfer
     event_callback_t callback; ///< The function pointer to call when the transaction terminates
     int event;                 ///< The event mask for the callback
     unsigned hz;               ///< The I2C frequency to use for the transaction
     bool repeated;             ///< If repeated is true, do not generate a stop condition
 };
 
-class QueuedI2CTransaction;
 /**
  * The base resource manager class for I2C
  */
@@ -103,8 +185,8 @@ public:
     /* Copying and moving Resource Managers would have unpredictable results */
     I2CResourceManager(const I2CResourceManager&) = delete;
     I2CResourceManager(I2CResourceManager&&) = delete;
-    operator =(const I2CResourceManager&) = delete;
-    operator =(I2CResourceManager&&) = delete;
+    const I2CResourceManager& operator =(const I2CResourceManager&) = delete;
+    const I2CResourceManager& operator =(I2CResourceManager&&) = delete;
     /* Initialize the I/O pins
      * While the resource manager is initialized statically, it may need runtime initialization as well.
      * init is called each time a new I2C
@@ -117,13 +199,13 @@ public:
      * @param[in] transaction Queue this transaction
      * @return the result of validating the transaction
      */
-    int post_transaction(I2CTransaction &transaction);
+    int post_transaction(const I2CTransaction &transaction);
 protected:
     /** These APIs are the interfaces that must be supplied by a derived Resource Manager */
     /** Starts the transaction at the head of the queue */
     virtual int start_transaction() = 0;
     /** Validates the transaction according to the criteria of the derived Resource Manager */
-    virtual int validate_transaction(I2CTransaction &transaction) = 0;
+    virtual int validate_transaction(const I2CTransaction &transaction) const = 0;
     /** Powers down the associated I2C controller */
     virtual int power_down() = 0;
     /** Power up the associated I2C controller */
@@ -141,9 +223,9 @@ protected:
     I2CResourceManager();
     ~I2CResourceManager();
     // A shared pool of transaction objects for all I2C resource managers
-    static PoolAllocator TransactionPool;
+    static mbed::util::PoolAllocator TransactionPool;
     // The head of the transaction queue
-    volatile QueuedI2CTransaction * TransactionQueue;
+    volatile I2CTransaction * TransactionQueue;
 };
 } // namespace detail
 
@@ -157,10 +239,10 @@ protected:
  *
  * I2C i2c(p28, p27);
  *
- * int main() {
- *     int address = 0x62;
- *     char data[2];
- *     i2c.read(address, data, 2);
+ * void tx_done
+ * void app_start(int, char **) {
+ *     static char txdata[2] = {0xaa, 0x55};
+ *     i2c.transfer_to(address).tx(data, 2).callback();
  * }
  * @endcode
  */
@@ -179,6 +261,7 @@ public:
         ACK   = 1
     };
 
+    using event_callback_t = detail::I2CTransaction::event_callback_t;
     /** Create an I2C Master interface, connected to the specified pins
      *
      *  @param sda I2C data line pin
@@ -192,34 +275,39 @@ public:
      */
     void frequency(int hz);
 
-
     class TransferAdder {
         friend I2C;
-    private:
-        TransferAdder(I2C *i2c, int address);
+    protected:
+        const TransferAdder & operator =(const TransferAdder &adder);
+        TransferAdder(I2C *i2c, int address, uint32_t hz);
+        TransferAdder(TransferAdder * parent);
         TransferAdder(I2C *i2c);
         TransferAdder(const TransferAdder &adder);
-        const TransferAdder & operator =(const TransferAdder &adder);
     public:
-        TransferAdder & rx(uint8_t *buf, size_t len);
-        TransferAdder & tx(uint8_t *buf, size_t len);
-        TransferAdder & rx(Buffer buf);
-        TransferAdder & tx(Buffer buf);
         TransferAdder & frequency(uint32_t hz);
-        TransferAdder & callback(const detail::I2CTransaction::event_callback_t& callback,
+        TransferAdder & callback(const event_callback_t & callback,
             int event = I2C_EVENT_TRANSFER_COMPLETE);
-        TransferAdder & repreated_start();
+        TransferAdder & repeated_start();
         int apply();
+        TransferAdder then();
+
+        TransferAdder & tx(void *buf, size_t len);
+        TransferAdder & tx(const Buffer & buf);
+
+        TransferAdder & rx(void *buf, size_t len);
+        TransferAdder & rx(const Buffer & buf);
+        TransferAdder & rx(size_t len);
+
         ~TransferAdder();
-    private:
-        I2CTransaction xact;
+    protected:
+        detail::I2CTransaction _xact;
         I2C* _i2c;
         bool _posted;
         int _rc;
+        TransferAdder * _parent;
     };
-
     TransferAdder transfer_to(int address);
-    int post_transaction(const I2CTransaction & t);
+    int post_transaction(const detail::I2CTransaction & t);
 
 protected:
     int _hz;
