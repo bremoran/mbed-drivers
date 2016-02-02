@@ -18,89 +18,18 @@
 
 #include "platform.h"
 
-#if DEVICE_I2C && DEVICE_I2C_ASYNCH
+#if DEVICE_I2C
 
 #include "i2c_api.h"
 
+#if DEVICE_I2C_ASYNCH
 #include "CThunk.h"
 #include "dma_api.h"
 #include "core-util/FunctionPointer.h"
-#include "core-util/PoolAllocator.h"
+#include "Transaction.h"
+#endif
 
-#include "I2CDetail.hpp"
-/**
- * \file
- * \brief A generic interface for I2C peripherals
- *
- * The I2C class interfaces with an I2C Resource manager in order to initiate Transactions
- * and receive events. The I2CTransaction class encapsulates all I2C transaction parameters.
- * The I2CResourceManager class is a generic interface for implementing I2C resource managers.
- * This will allow for additional classes of I2C device, for example, a bitbanged I2C master.
- *
- * I2C Resource managers are instantiated statically and initialized during global init.
- * There is one Resource Manager per logical port. Logical ports could consist of:
- *
- * * Onchip I2C controllers
- * * I2C Bridges (SPI->I2C bridge, I2C->I2C bridge, etc.)
- * * Bit banged I2C
- * * Bit banged I2C over SPI GPIO expander
- * * More...
- *
- * Currently only onchip I2C controllers are supported.
- *
- * ## Constructing I2C transactions
- *
- * ```C++
- * void doneCB(bool dir, EphemeralBuffer buf, int Event) {
- *     // Do something
- * }
- * I2C i2c0(sda, scl);
- * I2C i2c1(sda, scl);
- * void app_start (int, char **) {
- *     uint8_t cmd[2] = {0xaa, 0x55};
- *     i2c0.transfer_to(addr).tx(cmd,2).rx(4).on(I2C_EVENT_ALL, doneCB);
- * }
- * ```
- */
-#include "mbed-drivers/EphemeralBuffer.hpp"
 namespace mbed {
-// Forward declaration of I2C
-class I2C;
-/**
- * A Transaction container for I2C
- */
-class I2CTransaction {
-public:
-    /** I2C transfer callback
-     *  @param The transaction that was running when the callback was triggered
-     *  @param int the event that triggered the calback
-     */
-    typedef mbed::util::FunctionPointer2<void, I2CTransaction*, int> event_callback_t;
-    /**
-     * Construct an I2C transaction and set the destination address at the same time
-     *
-     * @param[in] address set the I2C destination address
-     */
-    I2CTransaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer);
-    ~I2CTransaction();
-
-    detail::I2CSegment * new_segment();
-public:
-    I2CTransaction * next;         ///< NOTE: Should thie be volatile?
-    uint16_t address;              ///< The target I2C address to communicate with
-    detail::I2CSegment * root;     ///< The first I2CSegment in the transaction
-    detail::I2CSegment * current;  ///< The current I2CSegment
-    unsigned hz;                   ///< The I2C frequency to use for the transaction
-    bool repeated;                 ///< If repeated is true, do not generate a stop condition
-    /// Flag to indicate that the Transaction and its Segments were allocated with an irqsafe allocator
-    bool irqsafe;
-    I2C * issuer;                  ///< The I2C Object that launched this transaction
-public:
-    event_callback_t _doneCB;
-    event_callback_t _nakCB;
-    event_callback_t _noslaveCB;
-    event_callback_t _errorCB;
-};
 
 /** An I2C Master, used for communicating with I2C slave devices
  *
@@ -112,24 +41,34 @@ public:
  *
  * I2C i2c(p28, p27);
  *
- * void tx_done
- * void app_start(int, char **) {
- *     static char txdata[2] = {0xaa, 0x55};
- *     i2c.transfer_to(address).tx(data, 2).callback();
+ * int main() {
+ *     int address = 0x62;
+ *     char data[2];
+ *     i2c.read(address, data, 2);
  * }
  * @endcode
  */
 class I2C {
 
 public:
-    using event_callback_t = I2CTransaction::event_callback_t;
+    enum RxStatus {
+        NoData,
+        MasterGeneralCall,
+        MasterWrite,
+        MasterRead
+    };
+
+    enum Acknowledge {
+        NoACK = 0,
+        ACK   = 1
+    };
+
     /** Create an I2C Master interface, connected to the specified pins
      *
      *  @param sda I2C data line pin
      *  @param scl I2C clock line pin
      */
     I2C(PinName sda, PinName scl);
-    I2C(PinName sda, PinName scl, mbed::util::PoolAllocator * TransactionPool, mbed::util::PoolAllocator * SegmentPool);
 
     /** Set the frequency of the I2C interface
      *
@@ -137,51 +76,119 @@ public:
      */
     void frequency(int hz);
 
-    class TransferAdder {
-        friend I2C;
-    protected:
-        TransferAdder(I2C *i2c, int address, uint32_t hz, bool irqsafe);
-    public:
-        TransferAdder & frequency(uint32_t hz);
-        TransferAdder & on(int event, const event_callback_t & cb);
+    /** Read from an I2C slave
+     *
+     * Performs a complete read transaction. The bottom bit of
+     * the address is forced to 1 to indicate a read.
+     *
+     *  @param address 8-bit I2C slave address [ addr | 1 ]
+     *  @param data Pointer to the byte-array to read data in to
+     *  @param length Number of bytes to read
+     *  @param repeated Repeated start, true - don't send stop at end
+     *
+     *  @returns
+     *       0 on success (ack),
+     *   non-0 on failure (nack)
+     */
+    int read(int address, char *data, int length, bool repeated = false);
 
-        TransferAdder & repeated_start();
-        int apply();
+    /** Read a single byte from the I2C bus
+     *
+     *  @param ack indicates if the byte is to be acknowledged (1 = acknowledge)
+     *
+     *  @returns
+     *    the byte read
+     */
+    int read(int ack);
 
-        TransferAdder & tx(void *buf, size_t len);
-        TransferAdder & tx(const Buffer & buf);
+    /** Write to an I2C slave
+     *
+     * Performs a complete write transaction. The bottom bit of
+     * the address is forced to 0 to indicate a write.
+     *
+     *  @param address 8-bit I2C slave address [ addr | 0 ]
+     *  @param data Pointer to the byte-array data to send
+     *  @param length Number of bytes to send
+     *  @param repeated Repeated start, true - do not send stop at end
+     *
+     *  @returns
+     *       0 on success (ack),
+     *   non-0 on failure (nack)
+     */
+    int write(int address, const char *data, int length, bool repeated = false);
 
-        TransferAdder & rx(void *buf, size_t len);
-        TransferAdder & rx(const Buffer & buf);
-        TransferAdder & rx(size_t len);
+    /** Write single byte out on the I2C bus
+     *
+     *  @param data data to write out on bus
+     *
+     *  @returns
+     *    '1' if an ACK was received,
+     *    '0' otherwise
+     */
+    int write(int data);
 
-        ~TransferAdder();
-    protected:
-        I2CTransaction * _xact;
-        I2C* _i2c;
-        bool _posted;
-        bool _irqsafe;
-        int _rc;
-    };
-    TransferAdder transfer_to(int address);
-    TransferAdder transfer_to_irqsafe(int address);
+    /** Creates a start condition on the I2C bus
+     */
 
-    detail::I2CSegment * new_segment(bool irqsafe);
+    void start(void);
 
-    void free(I2CTransaction * t);
-    void free(detail::I2CSegment * s, bool irqsafe);
+    /** Creates a stop condition on the I2C bus
+     */
+    void stop(void);
+
+#if DEVICE_I2C_ASYNCH
+    /** I2C transfer callback
+     *  @param Buffer the tx buffer
+     *  @param Buffer the rx buffer
+     *  @param int the event that triggered the calback
+     */
+    typedef mbed::util::FunctionPointer3<void, Buffer, Buffer, int> event_callback_t;
+
+    /** Start non-blocking I2C transfer.
+     *
+     * @param address   8/10 bit I2c slave address
+     * @param tx_buffer The TX buffer with data to be transfered
+     * @param tx_length The length of TX buffer
+     * @param rx_buffer The RX buffer which is used for received data
+     * @param rx_length The length of RX buffer
+     * @param event     The logical OR of events to modify
+     * @param callback  The event callback function
+     * @param repeated Repeated start, true - do not send stop at end
+     * @return Zero if the transfer has started, or -1 if I2C peripheral is busy
+     */
+    int transfer(int address, char *tx_buffer, int tx_length, char *rx_buffer, int rx_length, const event_callback_t& callback, int event = I2C_EVENT_TRANSFER_COMPLETE, bool repeated = false);
+
+     /** Start non-blocking I2C transfer.
+     *
+     * @param address   8/10 bit I2c slave address
+     * @param tx_buffer The TX buffer with data to be transfered
+     * @param rx_buffer The RX buffer which is used for received data
+     * @param event     The logical OR of events to modify
+     * @param callback  The event callback function
+     * @param repeated Repeated start, true - do not send stop at end
+     * @return Zero if the transfer has started, or -1 if I2C peripheral is busy
+     */
+    int transfer(int address, const Buffer& tx_buffer, const Buffer& rx_buffer, const event_callback_t& callback, int event = I2C_EVENT_TRANSFER_COMPLETE, bool repeated = false);
+
+    /** Abort the on-going I2C transfer
+     */
+    void abort_transfer();
+protected:
+    typedef TwoWayTransaction<event_callback_t> transaction_data_t;
+    typedef Transaction<I2C, transaction_data_t> transaction_t;
+
+    void irq_handler_asynch(void);
+    transaction_data_t _current_transaction;
+    CThunk<I2C> _irq;
+    DMAUsage _usage;
+#endif
 
 protected:
-    friend TransferAdder;
-    int post_transaction(I2CTransaction * t);
-    I2CTransaction * new_transaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer);
+    void aquire();
 
-    int _hz;
-    size_t ownerID;
-
-    mbed::util::PoolAllocator * TransactionPool;
-    mbed::util::PoolAllocator * SegmentPool;
-
+    i2c_t _i2c;
+    static I2C  *_owner;
+    int         _hz;
 };
 
 } // namespace mbed

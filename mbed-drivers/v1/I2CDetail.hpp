@@ -13,18 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef MBED_DRIVERS_I2CDETAIL_HPP
-#define MBED_DRIVERS_I2CDETAIL_HPP
+#ifndef MBED_DRIVERS_V1_I2CDETAIL_HPP
+#define MBED_DRIVERS_V1_I2CDETAIL_HPP
 
 #include "mbed-drivers/platform.h"
 
 #if DEVICE_I2C && DEVICE_I2C_ASYNCH
 
-#include "mbed-drivers/EphemeralBuffer.hpp"
+#include "EphemeralBuffer.hpp"
 #include "core-util/FunctionPointer.h"
 #include "PinNames.h"
 
-namespace mbed {
+namespace mbed_drivers {
+using namespace mbed;
+namespace v1 {
 // Forward declaration of the I2CTransaction
 class I2CTransaction;
 
@@ -123,8 +125,9 @@ protected:
 
 extern I2CResourceManager * I2COwners[];
 
-}
-}
+} // namespace detail
+} // namespace v1
+} // namespace mbed_drivers
 #endif // DEVICE_I2C && DEVICE_I2C_ASYNCH
 
-#endif // MBED_DRIVERS_I2CDETAIL_HPP
+#endif // MBED_DRIVERS_V1_I2CDETAIL_HPP

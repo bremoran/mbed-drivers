@@ -14,15 +14,17 @@
  * limitations under the License.
  */
 
-#include "mbed-drivers/I2CDetail.hpp"
+#include "mbed-drivers/v1/I2CDetail.hpp"
 
 #if DEVICE_I2C && DEVICE_I2C_ASYNCH
 
-#include "mbed-drivers/I2C.h"
+#include "mbed-drivers/v1/I2C.hpp"
 #include "core-util/CriticalSectionLock.h"
 #include "minar/minar.h"
 
-namespace mbed {
+namespace mbed_drivers {
+using namespace mbed;
+namespace v1 {
 namespace detail {
 // TODO: Increase the size of I2COwners to accept Resource Mangers for non-onchip I2C masters
 I2CResourceManager * I2COwners[MODULES_SIZE_I2C] = {nullptr};
@@ -227,6 +229,7 @@ template <> struct HWI2CResourceManagers<0> {
 /* Instantiate the HWI2CResourceManager */
 struct HWI2CResourceManagers<MODULES_SIZE_I2C-1> HWManagers;
 
-}
-}
+} // namespace detail
+} // namespace v1
+} // namespace mbed_drivers
 #endif // DEVICE_I2C && DEVICE_I2C_ASYNCH

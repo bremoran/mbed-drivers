@@ -13,9 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "mbed-drivers/EphemeralBuffer.hpp"
+#include "mbed-drivers/v1/EphemeralBuffer.hpp"
 #include <cstring>
-namespace mbed {
+namespace mbed_drivers {
+using namespace mbed;
+namespace v1 {
 void EphemeralBuffer::set(const Buffer & b) {
     set(b.buf,b.length);
 }
@@ -55,4 +57,5 @@ size_t EphemeralBuffer::get_len() const {
 bool EphemeralBuffer::is_ephemeral() const {
     return _ephemeral;
 }
-} // namespace mbed
+} // namespace v1
+} // namespace mbed_drivers

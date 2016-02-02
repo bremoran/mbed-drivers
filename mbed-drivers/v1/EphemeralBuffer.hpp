@@ -19,7 +19,9 @@
 #include <cstdint>
 #include "mbed-drivers/Buffer.h"
 
-namespace mbed {
+namespace mbed_drivers {
+using namespace mbed;
+namespace v1 {
 using std::uint8_t;
 /**
  * The EphemeralBuffer class is a variant of the Buffer class.
@@ -95,5 +97,6 @@ protected:
         };
     };
 };
+} // namespace v1
 } // namespace mbed
 #endif // MBED_DRIVERS_EPHEMERAL_BUFFER_H

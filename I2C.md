@@ -14,7 +14,7 @@ Typically, transactions should only be created in non-IRQ context, since they re
 # Example (non-IRQ context)
 
 ```C++
-
+using namespace mbed_drivers::v1;
 void done(I2CTransaction * t, int event) {
     printf("Transaction completed with code %d (%s)\r\n", event,
         event == I2C_EVENT_TRANSFER_COMPLETE? "done" : "error");

@@ -15,206 +15,120 @@
  */
 #include "mbed-drivers/I2C.h"
 #include "minar/minar.h"
-#include "ualloc/ualloc.h"
-#include "core-util/CriticalSectionLock.h"
-#include "PeripheralPins.h"
 
-#if DEVICE_I2C && DEVICE_I2C_ASYNCH
+#if DEVICE_I2C
 
 namespace mbed {
-I2CTransaction::I2CTransaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer):
-    address(address), hz(hz), repeated(false), irqsafe(irqsafe), issuer(issuer),
-    root(nullptr), current(nullptr)
-{}
-I2CTransaction::~I2CTransaction() {
-    current = root;
-    while (current) {
-        detail::I2CSegment * next = current->get_next();
-        issuer->free(current, irqsafe);
-        current = next;
-    }
-}
 
-detail::I2CSegment * I2CTransaction::new_segment()
-{
-    detail::I2CSegment * s = issuer->new_segment(irqsafe);
-    CORE_UTIL_ASSERT(s != nullptr);
-    if (!s) {
-        return nullptr;
-    }
-    s->set_next(nullptr);
-    mbed::util::CriticalSectionLock lock;
-    if (root == NULL) {
-        root = s;
-        current = s;
-    } else {
-        current->set_next(s);
-        current = s;
-    }
-    return s;
-}
+I2C *I2C::_owner = NULL;
 
 I2C::I2C(PinName sda, PinName scl) :
-    _hz(100000)
-{
-    // Select the appropriate I2C Resource Manager
-    uint32_t i2c_sda = pinmap_peripheral(sda, PinMap_I2C_SDA);
-    uint32_t i2c_scl = pinmap_peripheral(scl, PinMap_I2C_SCL);
-    ownerID = pinmap_merge(i2c_sda, i2c_scl);
-    int rc = detail::I2COwners[ownerID]->init(sda, scl);
-    if (rc) {
-        ownerID = (size_t) -1;
-    }
+#if DEVICE_I2C_ASYNCH
+                                     _irq(this), _usage(DMA_USAGE_NEVER),
+#endif
+                                      _i2c(), _hz(100000) {
+    // The init function also set the frequency to 100000
+    i2c_init(&_i2c, sda, scl);
+
+    // Used to avoid unnecessary frequency updates
+    _owner = this;
 }
 
-void I2C::frequency(int hz)
-{
+void I2C::frequency(int hz) {
     _hz = hz;
-}
-I2C::TransferAdder I2C::transfer_to(int address) {
-    TransferAdder t(this, address, _hz, false);
-    return t;
+
+    // We want to update the frequency even if we are already the bus owners
+    i2c_frequency(&_i2c, _hz);
+
+    // Updating the frequency of the bus we become the owners of it
+    _owner = this;
 }
 
-int I2C::post_transaction(I2CTransaction * t) {
-    if (ownerID == (size_t) -1) {
-        return -1;
+void I2C::aquire() {
+    if (_owner != this) {
+        i2c_frequency(&_i2c, _hz);
+        _owner = this;
     }
-    return detail::I2COwners[ownerID]->post_transaction(t);
 }
 
-detail::I2CSegment * I2C::new_segment(bool irqsafe) {
-    detail::I2CSegment * newseg = nullptr;
-    if (irqsafe) {
-        if (!SegmentPool) {
-            return nullptr;
-        }
-        void * space = SegmentPool->alloc();
-        if (!space) {
-            return nullptr;
-        }
-        newseg = new(space) detail::I2CSegment();
+// write - Master Transmitter Mode
+int I2C::write(int address, const char* data, int length, bool repeated) {
+    aquire();
+
+    int stop = (repeated) ? 0 : 1;
+    int written = i2c_write(&_i2c, address, data, length, stop);
+
+    return length != written;
+}
+
+int I2C::write(int data) {
+    return i2c_byte_write(&_i2c, data);
+}
+
+// read - Master Reciever Mode
+int I2C::read(int address, char* data, int length, bool repeated) {
+    aquire();
+
+    int stop = (repeated) ? 0 : 1;
+    int read = i2c_read(&_i2c, address, data, length, stop);
+
+    return length != read;
+}
+
+int I2C::read(int ack) {
+    if (ack) {
+        return i2c_byte_read(&_i2c, 0);
     } else {
-        newseg = new detail::I2CSegment();
-    }
-    return newseg;
-}
-
-I2CTransaction * I2C::new_transaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer)
-{
-    I2CTransaction * t;
-    if (irqsafe) {
-        if (!TransactionPool) {
-            return nullptr;
-        }
-        void *space = TransactionPool->alloc();
-        if (!space) {
-            return nullptr;
-        }
-        t = new(space) I2CTransaction(address, hz, irqsafe, issuer);
-    } else {
-        t = new I2CTransaction(address, hz, irqsafe, issuer);
-    }
-    return t;
-}
-void I2C::free(detail::I2CSegment * s, bool irqsafe)
-{
-    if (irqsafe) {
-        s->~I2CSegment();
-        SegmentPool->free(s);
-    } else {
-        delete s;
-    }
-}
-void I2C::free(I2CTransaction * t)
-{
-    if (t->irqsafe) {
-        t->~I2CTransaction();
-        TransactionPool->free(t);
-    } else {
-        delete t;
+        return i2c_byte_read(&_i2c, 1);
     }
 }
 
-
-I2C::TransferAdder::TransferAdder(I2C *i2c, int address, uint32_t hz, bool irqsafe) :
-    _i2c(i2c), _posted(false), _irqsafe(irqsafe), _rc(0)
-{
-    _xact = i2c->new_transaction(address, hz, irqsafe, i2c);
-    CORE_UTIL_ASSERT(_xact != nullptr);
-    if (!_xact) {
-        return;
-    }
-    _xact->address = address;
-    _xact->hz = hz;
-    _xact->irqsafe = irqsafe;
-}
-I2C::TransferAdder & I2C::TransferAdder::repeated_start()
-{
-    _xact->repeated = true;
-    return *this;
-}
-int I2C::TransferAdder::apply()
-{
-    if (_posted) {
-        return _rc;
-    }
-    _rc = _i2c->post_transaction(_xact);
-    return _rc;
-}
-I2C::TransferAdder & I2C::TransferAdder::on(int event, const event_callback_t & cb)
-{
-    if (event == I2C_EVENT_ERROR) {
-        _xact->_errorCB = cb;
-    }
-    if (event == I2C_EVENT_ERROR_NO_SLAVE) {
-        _xact->_noslaveCB = cb;
-    }
-    if (event == I2C_EVENT_TRANSFER_COMPLETE) {
-        _xact->_doneCB = cb;
-    }
-    if (event == I2C_EVENT_TRANSFER_EARLY_NACK) {
-        _xact->_nakCB = cb;
-    }
-    return *this;
+void I2C::start(void) {
+    i2c_start(&_i2c);
 }
 
+void I2C::stop(void) {
+    i2c_stop(&_i2c);
+}
 
-I2C::TransferAdder::~TransferAdder()
+#if DEVICE_I2C_ASYNCH
+
+int I2C::transfer(int address, char *tx_buffer, int tx_length, char *rx_buffer, int rx_length, const event_callback_t& callback, int event, bool repeated) {
+    return transfer(address, Buffer(tx_buffer, tx_length), Buffer(rx_buffer, rx_length), callback, event, repeated);
+}
+
+int I2C::transfer(int address, const Buffer& tx_buffer, const Buffer& rx_buffer, const event_callback_t& callback, int event, bool repeated) {
+    if (i2c_active(&_i2c)) {
+        return -1; // transaction ongoing
+    }
+    aquire();
+
+    _current_transaction.tx_buffer = tx_buffer;
+    _current_transaction.rx_buffer = rx_buffer;
+    _current_transaction.callback = callback;
+    int stop = (repeated) ? 0 : 1;
+    _irq.callback(&I2C::irq_handler_asynch);
+    i2c_transfer_asynch(&_i2c, tx_buffer.buf, tx_buffer.length, rx_buffer.buf, rx_buffer.length, address, stop, _irq.entry(), event, _usage);
+    return 0;
+}
+
+void I2C::abort_transfer(void)
 {
-    apply();
+    i2c_abort_asynch(&_i2c);
 }
 
-I2C::TransferAdder & I2C::TransferAdder::tx(void *buf, size_t len) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set(buf,len);
-    s->set_dir(detail::I2CDirection::Transmit);
-    return *this;
+void I2C::irq_handler_asynch(void)
+{
+    int event = i2c_irq_handler_asynch(&_i2c);
+    if (_current_transaction.callback && event) {
+        minar::Scheduler::postCallback(_current_transaction.callback.bind(_current_transaction.tx_buffer, _current_transaction.rx_buffer, event));
+    }
+
 }
-I2C::TransferAdder & I2C::TransferAdder::tx(const Buffer & buf) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set(buf);
-    s->set_dir(detail::I2CDirection::Transmit);
-    return *this;
-}
-I2C::TransferAdder & I2C::TransferAdder::rx(void *buf, size_t len) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set(buf,len);
-    s->set_dir(detail::I2CDirection::Receive);
-    return *this;
-}
-I2C::TransferAdder & I2C::TransferAdder::rx(const Buffer & buf) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set(buf);
-    s->set_dir(detail::I2CDirection::Receive);
-    return *this;
-}
-I2C::TransferAdder & I2C::TransferAdder::rx(size_t len) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set_ephemeral(nullptr,len);
-    s->set_dir(detail::I2CDirection::Receive);
-    return *this;
-}
+
+
+#endif
+
 } // namespace mbed
 
 #endif
