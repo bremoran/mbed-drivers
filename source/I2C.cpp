@@ -24,7 +24,8 @@
 
 namespace mbed {
 I2CTransaction::I2CTransaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer):
-    address(address), hz(hz), repeated(false), irqsafe(irqsafe), issuer(issuer)
+    address(address), hz(hz), repeated(false), irqsafe(irqsafe), issuer(issuer),
+    root(nullptr), current(nullptr)
 {}
 I2CTransaction::~I2CTransaction() {
     current = root;
