@@ -18,18 +18,16 @@
 
 #include "platform.h"
 
-#if DEVICE_I2C
+#if DEVICE_I2C && DEVICE_I2C_ASYNCH
 
 #include "i2c_api.h"
 
-#if DEVICE_I2C_ASYNCH
 #include "CThunk.h"
 #include "dma_api.h"
 #include "core-util/FunctionPointer.h"
 #include "core-util/PoolAllocator.h"
-#include "Transaction.h"
-#endif
 
+#include "I2CDetail.hpp"
 /**
  * \file
  * \brief A generic interface for I2C peripherals
@@ -51,8 +49,6 @@
  * Currently only onchip I2C controllers are supported.
  *
  * ## Constructing I2C transactions
- * To construct an I2C transaction with more than one segment, use the then member,
- * or the repeated_start member, with a CriticalSectionLock:
  *
  * ```C++
  * void doneCB(bool dir, EphemeralBuffer buf, int Event) {
@@ -62,188 +58,14 @@
  * I2C i2c1(sda, scl);
  * void app_start (int, char **) {
  *     uint8_t cmd[2] = {0xaa, 0x55};
- *     i2c0.transfer_to(addr).tx(cmd,2).then().rx(4).callback(doneCB, I2C_EVENT_ALL);
- *     // OR
- *     CriticalSectionLock lock;
- *     i2c1.transfer_to(addr).tx(cmd,2).repeated_start();
- *     i2c1.transfer_to(addr).rx(4).callback(doneCB, I2C_EVENT_ALL);
+ *     i2c0.transfer_to(addr).tx(cmd,2).rx(4).on(I2C_EVENT_ALL, doneCB);
  * }
  * ```
  */
-
+#include "mbed-drivers/EphemeralBuffer.hpp"
 namespace mbed {
+// Forward declaration of I2C
 class I2C;
-/**
- * The EphemeralBuffer class is a variant of the Buffer class.
- * Instead of just storing a buffer pointer and a size, if the buffer is less than
- * 8 bytes long, it packs the whole buffer into the space occupied by the pointer and
- * size variable. This is indicated by setting the MSB in size.
- */
-class EphemeralBuffer {
-public:
-    /**
-     * Set buffer pointer and length.
-     *
-     * @param[in] b A buffer to duplicate
-     */
-    void set(const Buffer & b);
-    /**
-     * Set buffer pointer and length.
-     * If the buffer is 7 or fewer bytes, copy it into the contents of EphemeralBuffer
-     * instead of keeping a pointer to it.
-     *
-     * @param[in] b A buffer to duplicate
-     */
-    void set_ephemeral(const Buffer & b);
-    /**
-     * Set the buffer pointer and length
-     *
-     * @param[in] buf the buffer pointer to duplicate
-     * @param[in] len the length of the buffer to duplicate
-     */
-    void set(void * buf, size_t len);
-    /**
-     * Set buffer pointer and length.
-     * If the buffer is 7 or fewer bytes, copy it into the contents of EphemeralBuffer
-     * instead of keeping a pointer to it.
-     *
-     * @param[in] buf the buffer pointer to duplicate
-     * @param[in] len the length of the buffer to duplicate
-     */
-    void set_ephemeral(void * buf, size_t len);
-    /**
-     * Get a pointer to the buffer.
-     *
-     * If the buffer is the internal storage, return it, otherwise return the reference
-     *
-     * @return the buffer pointer
-     */
-    void * get_buf();
-    /**
-     * Get the length
-     *
-     * @return the length of the buffer
-     */
-    size_t get_len() const;
-
-    /**
-     * Check if the buffer is ephemeral.
-     *
-     * @retval true The buffer contains data, rather than a pointer
-     * @retval false The buffer contains a pointer to data
-     */
-    bool is_ephemeral() const;
-protected:
-    union {
-        struct {
-            void * _dataPtr;
-            size_t _ptrLen:31;
-            unsigned _reserved:1;
-        };
-        struct {
-            uint8_t _data[sizeof(void *) + sizeof(size_t) - 1];
-            size_t _len:7;
-            unsigned _ephemeral:1;
-        };
-    };
-};
-class I2CTransaction;
-
-namespace detail {
-/**
- */
-enum class I2CDirection {Transmit, Receive};
-
-class I2CSegment : public EphemeralBuffer {
-public:
-    I2CSegment() :
-        EphemeralBuffer(), _next(nullptr), _irqCB(nullptr)
-    {}
-    I2CSegment(I2CSegment & s) :
-        _dir(s._dir), _next(nullptr), _irqCB(s._irqCB)
-    {
-        set(s.get_buf(), s.get_len());
-    }
-    void set_next(I2CSegment * next) {
-        _next = next;
-    }
-    I2CSegment * get_next() const {
-        return _next;
-    }
-    void set_irq_cb(mbed::util::FunctionPointer1<void, I2CSegment *> cb) {
-        _irqCB = cb;
-    }
-    void call_irq_cb() {
-        if (_irqCB) {
-            _irqCB(_next);
-        }
-    }
-    void set_dir(I2CDirection dir) {
-        _dir = dir;
-    }
-    I2CDirection get_dir() const {
-        return _dir;
-    }
-protected:
-    enum I2CDirection _dir;          ///< The direction of the transfer
-    I2CSegment * _next;
-    mbed::util::FunctionPointer1<void, I2CSegment *> _irqCB;
-};
-/**
- * The base resource manager class for I2C
- */
-class I2CResourceManager {
-public:
-    /* Copying and moving Resource Managers would have unpredictable results */
-    I2CResourceManager(const I2CResourceManager&) = delete;
-    I2CResourceManager(I2CResourceManager&&) = delete;
-    const I2CResourceManager& operator =(const I2CResourceManager&) = delete;
-    const I2CResourceManager& operator =(I2CResourceManager&&) = delete;
-    /* Initialize the I/O pins
-     * While the resource manager is initialized statically, it may need runtime initialization as well.
-     * init is called each time a new I2C
-     */
-    virtual int init(PinName sda, PinName scl) = 0;
-    /* Add a transaction to the transaction queue of the associated logical I2C port
-     *
-     * If the peripheral is idle, calls power_up()
-     * @param[in] transaction Queue this transaction
-     * @return the result of validating the transaction
-     */
-    // int post_transaction(const I2CTransaction &transaction);
-    int post_transaction(I2CTransaction *transaction);
-protected:
-    /** These APIs are the interfaces that must be supplied by a derived Resource Manager */
-    /** Starts the transaction at the head of the queue */
-    virtual int start_transaction() = 0;
-    virtual int start_segment() = 0;
-
-    /** Validates the transaction according to the criteria of the derived Resource Manager */
-    virtual int validate_transaction(I2CTransaction *transaction) const = 0;
-    /** Powers down the associated I2C controller */
-    virtual int power_down() = 0;
-    /** Power up the associated I2C controller */
-    virtual int power_up() = 0;
-protected:
-    /** Handle an event
-     * Starts the next transfer
-     * If there are no more transfers queued, calls power_down()
-     * Then, calls the event associated with the completed transfer.
-     * Finally, frees the associated event.
-     *
-     * @param[in] event the source of the current handler call
-     */
-    void process_event(int event);
-    void event_cb(I2CTransaction * t, int event);
-    I2CResourceManager();
-    ~I2CResourceManager();
-    // A shared pool of transaction objects for all I2C resource managers
-    // static mbed::util::PoolAllocator TransactionPool;
-    // The head of the transaction queue
-    volatile I2CTransaction * TransactionQueue;
-};
-} // namespace detail
-
 /**
  * A Transaction container for I2C
  */
@@ -300,18 +122,6 @@ public:
 class I2C {
 
 public:
-    enum RxStatus {
-        NoData,
-        MasterGeneralCall,
-        MasterWrite,
-        MasterRead
-    };
-
-    enum Acknowledge {
-        NoACK = 0,
-        ACK   = 1
-    };
-
     using event_callback_t = I2CTransaction::event_callback_t;
     /** Create an I2C Master interface, connected to the specified pins
      *
