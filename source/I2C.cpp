@@ -148,7 +148,7 @@ I2CResourceManager::~I2CResourceManager() {
 
 class HWI2CResourceManager : public I2CResourceManager {
 public:
-    HWI2CResourceManager(size_t id, void(*handler)(void)):
+    HWI2CResourceManager(const size_t id, void(*handler)(void)):
         _i2c(),
         _id(id),
         _usage(DMA_USAGE_NEVER),
@@ -256,38 +256,48 @@ template <> struct HWI2CResourceManagers<0> {
 };
 
 /* Instantiate the HWI2CResourceManager */
-struct HWI2CResourceManagers<MODULES_SIZE_I2C> HWManagers;
+struct HWI2CResourceManagers<MODULES_SIZE_I2C-1> HWManagers;
 
 } // namespace detail
 
-void I2CBuffer::set(const Buffer & b) {
+void EphemeralBuffer::set(const Buffer & b) {
     set(b.buf,b.length);
 }
-void I2CBuffer::set(void * buf, size_t len) {
-    if (len <= sizeof(_packed.data)) {
-        _packed.small = true;
-        _packed.len = len;
+void EphemeralBuffer::set(void * buf, size_t len) {
+    _ptrLen = len;
+    _dataPtr = buf;
+}
+void EphemeralBuffer::set_ephemeral(const Buffer & b) {
+    set_ephemeral(b.buf,b.length);
+}
+void EphemeralBuffer::set_ephemeral(void * buf, size_t len) {
+    if (len <= sizeof(_data)) {
+        _ephemeral = true;
+        _len = len;
         if (buf) {
-            memcpy(_packed.data, buf, len);
+            memcpy(_data, buf, len);
         }
     } else {
-        _ref.len = len;
-        _ref.data = buf;
+        _ptrLen = len;
+        _dataPtr = buf;
     }
 }
-void * I2CBuffer::get_buf() {
-    if (_packed.small) {
-        return _packed.data;
+void * EphemeralBuffer::get_buf() {
+    if (_ephemeral) {
+        return _data;
     } else {
-        return _ref.data;
+        return _dataPtr;
     }
 }
-size_t I2CBuffer::get_len() const {
-    if (_packed.small) {
-        return _packed.len;
+size_t EphemeralBuffer::get_len() const {
+    if (_ephemeral) {
+        return _len;
     } else {
-        return _ref.len;
+        return _ptrLen;
     }
+}
+bool EphemeralBuffer::is_ephemeral() const {
+    return _ephemeral;
 }
 } // namespace mbed
 

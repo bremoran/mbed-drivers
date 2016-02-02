@@ -55,7 +55,7 @@
  * or the repeated_start member, with a CriticalSectionLock:
  *
  * ```C++
- * void doneCB(bool dir, I2CBuffer buf, int Event) {
+ * void doneCB(bool dir, EphemeralBuffer buf, int Event) {
  *     // Do something
  * }
  * I2C i2c0(sda, scl);
@@ -74,12 +74,12 @@
 namespace mbed {
 class I2C;
 /**
- * The I2CBuffer class is a variant of the Buffer class.
+ * The EphemeralBuffer class is a variant of the Buffer class.
  * Instead of just storing a buffer pointer and a size, if the buffer is less than
  * 8 bytes long, it packs the whole buffer into the space occupied by the pointer and
  * size variable. This is indicated by setting the MSB in size.
  */
-class I2CBuffer {
+class EphemeralBuffer {
 public:
     /**
      * Set buffer pointer and length.
@@ -88,14 +88,29 @@ public:
      */
     void set(const Buffer & b);
     /**
-     * Set the buffer pointer and length
+     * Set buffer pointer and length.
+     * If the buffer is 7 or fewer bytes, copy it into the contents of EphemeralBuffer
+     * instead of keeping a pointer to it.
      *
-     * If the length of the buffer is less than 8 bytes it is stored internally
+     * @param[in] b A buffer to duplicate
+     */
+    void set_ephemeral(const Buffer & b);
+    /**
+     * Set the buffer pointer and length
      *
      * @param[in] buf the buffer pointer to duplicate
      * @param[in] len the length of the buffer to duplicate
      */
     void set(void * buf, size_t len);
+    /**
+     * Set buffer pointer and length.
+     * If the buffer is 7 or fewer bytes, copy it into the contents of EphemeralBuffer
+     * instead of keeping a pointer to it.
+     *
+     * @param[in] buf the buffer pointer to duplicate
+     * @param[in] len the length of the buffer to duplicate
+     */
+    void set_ephemeral(void * buf, size_t len);
     /**
      * Get a pointer to the buffer.
      *
@@ -110,17 +125,26 @@ public:
      * @return the length of the buffer
      */
     size_t get_len() const;
+
+    /**
+     * Check if the buffer is ephemeral.
+     *
+     * @retval true The buffer contains data, rather than a pointer
+     * @retval false The buffer contains a pointer to data
+     */
+    bool is_ephemeral() const;
 protected:
     union {
         struct {
-            void * data;
-            size_t len;
-        } _ref;
+            void * _dataPtr;
+            size_t _ptrLen:31;
+            unsigned _reserved:1;
+        };
         struct {
-            uint8_t data[sizeof(_ref)-1];
-            unsigned small:1;
-            unsigned len:7;
-        } _packed;
+            uint8_t _data[sizeof(void *) + sizeof(size_t) - 1];
+            size_t _len:7;
+            unsigned _ephemeral:1;
+        };
     };
 };
 class I2CTransaction;
@@ -130,10 +154,10 @@ namespace detail {
  */
 enum class I2CDirection {Transmit, Receive};
 
-class I2CSegment : public I2CBuffer {
+class I2CSegment : public EphemeralBuffer {
 public:
     I2CSegment() :
-        I2CBuffer(), _next(nullptr), _irqCB(nullptr)
+        EphemeralBuffer(), _next(nullptr), _irqCB(nullptr)
     {}
     I2CSegment(I2CSegment & s) :
         _dir(s._dir), _next(nullptr), _irqCB(s._irqCB)
