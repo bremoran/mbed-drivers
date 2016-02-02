@@ -211,7 +211,7 @@ I2C::TransferAdder & I2C::TransferAdder::rx(const Buffer & buf) {
 }
 I2C::TransferAdder & I2C::TransferAdder::rx(size_t len) {
     detail::I2CSegment * s = _xact->new_segment();
-    s->set(nullptr,len);
+    s->set_ephemeral(nullptr,len);
     s->set_dir(detail::I2CDirection::Receive);
     return *this;
 }
