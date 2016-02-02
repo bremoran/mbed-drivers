@@ -123,7 +123,7 @@ protected:
     volatile I2CTransaction * TransactionQueue;
 };
 
-extern I2CResourceManager * I2COwners[];
+I2CResourceManager * get_I2C_owner(size_t I);
 
 } // namespace detail
 } // namespace v1

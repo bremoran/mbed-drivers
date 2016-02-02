@@ -69,7 +69,7 @@ I2C::I2C(PinName sda, PinName scl) :
     uint32_t i2c_sda = pinmap_peripheral(sda, PinMap_I2C_SDA);
     uint32_t i2c_scl = pinmap_peripheral(scl, PinMap_I2C_SCL);
     ownerID = pinmap_merge(i2c_sda, i2c_scl);
-    int rc = detail::I2COwners[ownerID]->init(sda, scl);
+    int rc = detail::get_I2C_owner(ownerID)->init(sda, scl);
     if (rc) {
         ownerID = (size_t) -1;
     }
@@ -88,7 +88,7 @@ int I2C::post_transaction(I2CTransaction * t) {
     if (ownerID == (size_t) -1) {
         return -1;
     }
-    return detail::I2COwners[ownerID]->post_transaction(t);
+    return detail::get_I2C_owner(ownerID)->post_transaction(t);
 }
 
 detail::I2CSegment * I2C::new_segment(bool irqsafe) {

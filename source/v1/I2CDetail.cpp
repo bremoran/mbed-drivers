@@ -26,8 +26,6 @@ namespace mbed_drivers {
 using namespace mbed;
 namespace v1 {
 namespace detail {
-// TODO: Increase the size of I2COwners to accept Resource Mangers for non-onchip I2C masters
-I2CResourceManager * I2COwners[MODULES_SIZE_I2C] = {nullptr};
 
 int I2CResourceManager::post_transaction(I2CTransaction *t) {
     int rc;
@@ -126,8 +124,6 @@ public:
         _inited(false),
         _handler(handler)
     {
-        CORE_UTIL_ASSERT(I2COwners[id] == nullptr);
-        I2COwners[id] = this;
     }
     int init(PinName sda, PinName scl) {
         // calling init during a transaction could cause communication artifacts
@@ -206,14 +202,23 @@ protected:
     void (*const _handler)(void);
 };
 
-// template <size_t N> struct HWI2CResourceManagers;
-template <size_t N> struct HWI2CResourceManagers : HWI2CResourceManagers<N-1> {
+template <size_t N> struct HWI2CResourceManagers : public HWI2CResourceManagers<N-1> {
     HWI2CResourceManagers() : rm(N, irq_handler_asynch){}
     HWI2CResourceManager rm;
     static void irq_handler_asynch(void)
     {
-        HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(I2COwners[N]);
+        HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(get_I2C_owner(N));
         rm->irq_handler();
+    }
+    I2CResourceManager * get_rm(size_t I) {
+        CORE_UTIL_ASSERT(I > N);
+        if (I > N) {
+            return nullptr;
+        } else if (I == 0) {
+            return &rm;
+        } else {
+            return HWI2CResourceManagers<N-1>::get_rm(I-1);
+        }
     }
 };
 template <> struct HWI2CResourceManagers<0> {
@@ -221,13 +226,31 @@ template <> struct HWI2CResourceManagers<0> {
     HWI2CResourceManager rm;
     static void irq_handler_asynch(void)
     {
-        HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(I2COwners[0]);
+        HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(get_I2C_owner(0));
         rm->irq_handler();
+    }
+    I2CResourceManager * get_rm(size_t I) {
+        CORE_UTIL_ASSERT(I);
+        if (I) {
+            return nullptr;
+        } else {
+            return &rm;
+        }
     }
 };
 
-/* Instantiate the HWI2CResourceManager */
-struct HWI2CResourceManagers<MODULES_SIZE_I2C-1> HWManagers;
+// TODO: Add other options for I2C Owners.
+I2CResourceManager * get_I2C_owner(size_t I)
+{
+    /* Instantiate the HWI2CResourceManager */
+    static struct HWI2CResourceManagers<MODULES_SIZE_I2C-1> HWManagers;
+    if (I < MODULES_SIZE_I2C) {
+        return HWManagers.get_rm(I);
+    } else {
+        CORE_UTIL_ASSERT(false);
+        return nullptr;
+    }
+}
 
 } // namespace detail
 } // namespace v1
