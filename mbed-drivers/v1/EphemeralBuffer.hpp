@@ -17,26 +17,55 @@
 #define MBED_DRIVERS_EPHEMERAL_BUFFER_H
 
 #include <cstdint>
+#include <cstring>
 #include "mbed-drivers/Buffer.h"
 
 namespace mbed_drivers {
 using namespace mbed;
 namespace v1 {
-using std::uint8_t;
 /**
  * The EphemeralBuffer class is a variant of the Buffer class.
- * Instead of just storing a buffer pointer and a size, if the buffer is less than
- * 8 bytes long, it packs the whole buffer into the space occupied by the pointer and
- * size variable. This is indicated by setting the MSB in size.
+ * Instead of just storing a buffer pointer and a size, if the buffer is less than ```sizeof(size_t) + sizeof(void *)```
+ * bytes long, it packs the whole buffer into the space occupied by the pointer and size variable. This is indicated by
+ * setting the MSB in size.
+ *
+ * EphemeralBuffer is not assumed to own the buffer to which it points unless it
+ * is in ephemeral mode.
  */
 class EphemeralBuffer {
 public:
+    /**
+     * @brief Default constructor
+     * Initializes the EphemeralBuffer to ephemeral mode with a buffer length of
+     * 7. This means that a default EphemeralBuffer can be used to receive data
+     * or as the target of a copy operation.
+     */
+    EphemeralBuffer() : _len(sizeof(_data)), _ephemeral(true) {}
+
+    /**
+     * @brief Copy constructor
+     * Duplicates the incoming EphemeralBuffer.
+     *
+     * @param[in] x the buffer to copy
+     */
+    EphemeralBuffer(const EphemeralBuffer & x) : _ephemeral(x._ephemeral)
+    {
+        if (is_ephemeral()) {
+            _len = x._len;
+            std::memcpy(_data, x._data, sizeof(_data));
+        } else {
+            _dataPtr = const_cast<void *>(x._dataPtr);
+            _ptrLen  = x._ptrLen;
+        }
+    }
+
     /**
      * Set buffer pointer and length.
      *
      * @param[in] b A buffer to duplicate
      */
     void set(const Buffer & b);
+
     /**
      * Set buffer pointer and length.
      * If the buffer is 7 or fewer bytes, copy it into the contents of EphemeralBuffer
@@ -45,13 +74,15 @@ public:
      * @param[in] b A buffer to duplicate
      */
     void set_ephemeral(const Buffer & b);
+
     /**
      * Set the buffer pointer and length
      *
      * @param[in] buf the buffer pointer to duplicate
      * @param[in] len the length of the buffer to duplicate
      */
-    void set(void * buf, size_t len);
+    void set(void * buf, std::size_t len);
+
     /**
      * Set buffer pointer and length.
      * If the buffer is 7 or fewer bytes, copy it into the contents of EphemeralBuffer
@@ -60,7 +91,8 @@ public:
      * @param[in] buf the buffer pointer to duplicate
      * @param[in] len the length of the buffer to duplicate
      */
-    void set_ephemeral(void * buf, size_t len);
+    void set_ephemeral(void * buf, std::size_t len);
+
     /**
      * Get a pointer to the buffer.
      *
@@ -69,12 +101,13 @@ public:
      * @return the buffer pointer
      */
     void * get_buf();
+
     /**
      * Get the length
      *
      * @return the length of the buffer
      */
-    size_t get_len() const;
+    std::size_t get_len() const;
 
     /**
      * Check if the buffer is ephemeral.
@@ -83,16 +116,17 @@ public:
      * @retval false The buffer contains a pointer to data
      */
     bool is_ephemeral() const;
+
 protected:
     union {
         struct {
             void * _dataPtr;
-            size_t _ptrLen:31;
+            std::size_t _ptrLen:(sizeof(size_t)*8-1);
             unsigned _reserved:1;
         };
         struct {
-            uint8_t _data[sizeof(void *) + sizeof(size_t) - 1];
-            size_t _len:7;
+            std::uint8_t _data[sizeof(void *) + sizeof(size_t) - 1];
+            std::size_t _len:7;
             unsigned _ephemeral:1;
         };
     };

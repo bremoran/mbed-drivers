@@ -25,41 +25,88 @@ namespace mbed_drivers {
 using namespace mbed;
 namespace v1 {
 I2CTransaction::I2CTransaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer):
-    next(nullptr),
-    address(address),
-    root(nullptr),
-    current(nullptr),
-    hz(hz),
-    repeated(false),
-    irqsafe(irqsafe),
-    issuer(issuer)
+    _next(nullptr),
+    _address(address),
+    _root(nullptr),
+    _current(nullptr),
+    _hz(hz),
+    _repeated(false),
+    _irqsafe(irqsafe),
+    _issuer(issuer)
 {}
 I2CTransaction::~I2CTransaction() {
-    current = root;
-    while (current) {
-        detail::I2CSegment * next = current->get_next();
-        issuer->free(current, irqsafe);
-        current = next;
+    mbed::util::CriticalSectionLock lock;
+    _current = _root;
+    while (_current) {
+        detail::I2CSegment * next = _current->get_next();
+        _issuer->free(_current, _irqsafe);
+        _current = next;
     }
+}
+
+void I2CTransaction::append(I2CTransaction * t) {
+    CORE_UTIL_ASSERT(t != nullptr);
+    if (!t) {
+        return;
+    }
+    // Append is called from within a critical section, so an atomic_cas is not necessary
+    if (_next == nullptr) {
+        _next = t;
+    } else {
+        _next->append(t);
+    }
+}
+
+void I2CTransaction::call_irq_cb(uint32_t event) {
+    if (_current) {
+        _current->call_irq_cb(event);
+    }
+}
+
+bool I2CTransaction::advance_segment() {
+    if (!_current) {
+        return false;
+    }
+    _current = _current->get_next();
+    return _current != nullptr;
 }
 
 detail::I2CSegment * I2CTransaction::new_segment()
 {
-    detail::I2CSegment * s = issuer->new_segment(irqsafe);
+    detail::I2CSegment * s = _issuer->new_segment(_irqsafe);
     CORE_UTIL_ASSERT(s != nullptr);
     if (!s) {
         return nullptr;
     }
     s->set_next(nullptr);
     mbed::util::CriticalSectionLock lock;
-    if (root == NULL) {
-        root = s;
-        current = s;
+    if (_root == NULL) {
+        _root = s;
+        _current = s;
     } else {
-        current->set_next(s);
-        current = s;
+        _current->set_next(s);
+        _current = s;
     }
     return s;
+}
+bool I2CTransaction::add_event(uint32_t event, const event_callback_t & cb) {
+    size_t i;
+    for (i = 0; i < I2C_TRANSACTION_NHANDLERS; i++) {
+        if (!_handlers[i]) {
+            _handlers[i].set(cb, event);
+            break;
+        }
+    }
+    return i < I2C_TRANSACTION_NHANDLERS;
+}
+
+void I2CTransaction::process_event(uint32_t event) {
+    size_t i;
+    for (i = 0; i < I2C_TRANSACTION_NHANDLERS; i++) {
+        if (_handlers[i]) {
+            _handlers[i].call(this, event);
+        }
+    }
 }
 
 I2C::I2C(PinName sda, PinName scl) :
@@ -68,11 +115,9 @@ I2C::I2C(PinName sda, PinName scl) :
     // Select the appropriate I2C Resource Manager
     uint32_t i2c_sda = pinmap_peripheral(sda, PinMap_I2C_SDA);
     uint32_t i2c_scl = pinmap_peripheral(scl, PinMap_I2C_SCL);
-    ownerID = pinmap_merge(i2c_sda, i2c_scl);
-    int rc = detail::get_I2C_owner(ownerID)->init(sda, scl);
-    if (rc) {
-        ownerID = (size_t) -1;
-    }
+    int ownerID = pinmap_merge(i2c_sda, i2c_scl);
+    _owner = detail::get_i2c_owner(ownerID);
+    CORE_UTIL_ASSERT(I2CError::None == _owner->init(sda, scl));
 }
 
 void I2C::frequency(int hz)
@@ -84,11 +129,11 @@ I2C::TransferAdder I2C::transfer_to(int address) {
     return t;
 }
 
-int I2C::post_transaction(I2CTransaction * t) {
-    if (ownerID == (size_t) -1) {
-        return -1;
+I2CError I2C::post_transaction(I2CTransaction * t) {
+    if (!_owner) {
+        return I2CError::InvalidMaster;
     }
-    return detail::get_I2C_owner(ownerID)->post_transaction(t);
+    return _owner->post_transaction(t);
 }
 
 detail::I2CSegment * I2C::new_segment(bool irqsafe) {
@@ -136,7 +181,7 @@ void I2C::free(detail::I2CSegment * s, bool irqsafe)
 }
 void I2C::free(I2CTransaction * t)
 {
-    if (t->irqsafe) {
+    if (t->is_irqsafe()) {
         t->~I2CTransaction();
         TransactionPool->free(t);
     } else {
@@ -146,44 +191,34 @@ void I2C::free(I2CTransaction * t)
 
 
 I2C::TransferAdder::TransferAdder(I2C *i2c, int address, uint32_t hz, bool irqsafe) :
-    _i2c(i2c), _posted(false), _irqsafe(irqsafe), _rc(0)
+    _i2c(i2c), _posted(false), _irqsafe(irqsafe), _rc(I2CError::None)
 {
     _xact = i2c->new_transaction(address, hz, irqsafe, i2c);
     CORE_UTIL_ASSERT(_xact != nullptr);
     if (!_xact) {
         return;
     }
-    _xact->address = address;
-    _xact->hz = hz;
-    _xact->irqsafe = irqsafe;
 }
 I2C::TransferAdder & I2C::TransferAdder::repeated_start()
 {
-    _xact->repeated = true;
+    _xact->repeated(true);
     return *this;
 }
-int I2C::TransferAdder::apply()
+I2CError I2C::TransferAdder::apply()
 {
     if (_posted) {
         return _rc;
     }
-    _rc = _i2c->post_transaction(_xact);
-    return _rc;
+    return _i2c->post_transaction(_xact);
 }
-I2C::TransferAdder & I2C::TransferAdder::on(int event, const event_callback_t & cb)
+I2C::TransferAdder & I2C::TransferAdder::on(uint32_t event, const event_callback_t & cb)
 {
-    if (event == I2C_EVENT_ERROR) {
-        _xact->_errorCB = cb;
-    }
-    if (event == I2C_EVENT_ERROR_NO_SLAVE) {
-        _xact->_noslaveCB = cb;
-    }
-    if (event == I2C_EVENT_TRANSFER_COMPLETE) {
-        _xact->_doneCB = cb;
-    }
-    if (event == I2C_EVENT_TRANSFER_EARLY_NACK) {
-        _xact->_nakCB = cb;
-    }
+    _xact->add_event(event, cb);
+    return *this;
+}
+I2C::TransferAdder & I2C::TransferAdder::frequency(uint32_t hz)
+{
+    _xact->freq(hz);
     return *this;
 }
 

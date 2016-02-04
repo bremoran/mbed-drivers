@@ -14,12 +14,14 @@
  * limitations under the License.
  */
 
-#include "mbed-drivers/v1/I2CDetail.hpp"
+#include "mbed-drivers/platform.h"
 
 #if DEVICE_I2C && DEVICE_I2C_ASYNCH
 
 #include "mbed-drivers/v1/I2C.hpp"
 #include "core-util/CriticalSectionLock.h"
+#include "core-util/atomic_ops.h"
+#include "core-util/assert.h"
 #include "minar/minar.h"
 
 namespace mbed_drivers {
@@ -27,91 +29,84 @@ using namespace mbed;
 namespace v1 {
 namespace detail {
 
-int I2CResourceManager::post_transaction(I2CTransaction *t) {
-    int rc;
-    if ((rc = validate_transaction(t))) {
+I2CError I2CResourceManager::post_transaction(I2CTransaction *t) {
+    CORE_UTIL_ASSERT(t != nullptr);
+    if (!t) {
+        return I2CError::NullTransaction;
+    }
+    I2CError rc = validate_transaction(t);
+    if (rc != I2CError::None) {
         return rc;
     }
-    // Optimization NOTE: this could be lock-free with atomic_cas.
+
+    // This can't be lock free because of the need to call append() on TransactionQueue.
     mbed::util::CriticalSectionLock lock;
-    // Find the tail of the queue
-    I2CTransaction * tx = (I2CTransaction *)TransactionQueue;
-    if (!tx) {
+    // A C-style cast is required to strip the volatile qualifier.
+    I2CTransaction * tx = TransactionQueue;
+
+    if (tx) {
+        tx->append(t);
+    } else {
         TransactionQueue = t;
         power_up();
-        start_transaction();
-        return 0;
+        return start_transaction();
     }
-    while (tx->next) {
-        tx = tx->next;
-    }
-    tx->next = t;
-    return 0;
+    return I2CError::None;
 }
 
-void I2CResourceManager::process_event(int event) {
+void I2CResourceManager::process_event(uint32_t event) {
     I2CTransaction * t;
     CORE_UTIL_ASSERT(TransactionQueue != nullptr);
     if (!TransactionQueue) {
         return;
     }
     // Get the current item in the transaction queue
-    t = (I2CTransaction *) TransactionQueue;
+    // A C-style cast is required to strip the volatile qualifier.
+    t = TransactionQueue;
     if (!t) {
         return;
     }
     // Fire the irqcallback for the segment
-    t->current->call_irq_cb();
+    t->call_irq_cb(event);
+    // This can't be done with atomics: there are too many side-effects.
+    mbed::util::CriticalSectionLock lock;
+    // If there is another segment to process, advance the segment pointer
+    // Record whether there was another segment
+    bool TransactionDone = !t->advance_segment();
     // If there was an event that is not a complete event
     // or there was a complete event and the next segment is nullptr
     if ((event & I2C_EVENT_ALL & ~I2C_EVENT_TRANSFER_COMPLETE) ||
-        ((event & I2C_EVENT_TRANSFER_COMPLETE) && t->current->get_next() == nullptr))
+        ((event & I2C_EVENT_TRANSFER_COMPLETE) && TransactionDone))
     {
         // fire the handler
-        using cbtype = mbed::util::FunctionPointer2<void,I2CTransaction *, int>;
-        minar::Scheduler::postCallback(cbtype(this, &I2CResourceManager::event_cb).bind(t,event));
-        // TODO: This could be lock-free
-        // Enter a critical section
-        mbed::util::CriticalSectionLock lock;
+        minar::Scheduler::postCallback(event_callback_t(this, &I2CResourceManager::handle_event).bind(t,event));
         // Advance to the next transaction
-        TransactionQueue = t->next;
+        TransactionQueue = t->get_next();
         if (TransactionQueue) {
             // Initiate the next transaction
             start_transaction();
         } else {
             power_down();
         }
-    } else {
-        // TODO: this could be lock-free
-        mbed::util::CriticalSectionLock lock;
-        t->current = t->current->get_next();
+    } else if (!TransactionDone) {
         start_segment();
     }
 }
-void I2CResourceManager::event_cb(I2CTransaction * t, int event) {
-    // TODO: Should these be else-ifs?
-    if (event & I2C_EVENT_ERROR_NO_SLAVE) {
-        t->_noslaveCB(t, event);
-    }
-    if (event & I2C_EVENT_TRANSFER_EARLY_NACK) {
-        t->_nakCB(t, event);
-    }
-    if (event & I2C_EVENT_ERROR) {
-        t->_errorCB(t, event);
-    }
-    if (event & I2C_EVENT_TRANSFER_COMPLETE) {
-        t->_doneCB(t, event);
-    }
-    t->issuer->free(t);
-}
 
+void I2CResourceManager::handle_event(I2CTransaction * t, uint32_t event) {
+    t->process_event(event);
+    // This happens after the callbacks have all been called
+    t->get_issuer()->free(t);
+}
 
 I2CResourceManager::I2CResourceManager() : TransactionQueue(nullptr) {}
 I2CResourceManager::~I2CResourceManager() {
+    mbed::util::CriticalSectionLock lock;
     while (TransactionQueue) {
-        I2CTransaction * tx = (I2CTransaction *)(TransactionQueue);
-        TransactionQueue = tx->next;
-        tx->issuer->free(tx);
+        // A C-style cast is required to strip the volatile qualifier.
+        I2CTransaction * tx = (TransactionQueue);
+        TransactionQueue = tx->get_next();
+        tx->get_issuer()->free(tx);
     }
 }
 
@@ -125,73 +120,81 @@ public:
         _handler(handler)
     {
     }
-    int init(PinName sda, PinName scl) {
+
+    I2CError init(PinName sda, PinName scl) {
         // calling init during a transaction could cause communication artifacts
         if (!_inited) {
             // The init function also set the frequency to 100000
             i2c_init(&_i2c, sda, scl);
             _inited = true;
         } else {
+            CORE_UTIL_ASSERT_MSG(_scl == scl && _sda == sda, "Each I2C peripheral may only be used on one set of pins");
             // Only support an I2C master on a single pair of pins
             if (_scl != scl || _sda != sda) {
-                return -1;
+                return I2CError::PinMismatch;
             }
         }
-        return 0;
+        return I2CError::None;
     }
-    int start_segment () {
-        I2CTransaction * t = (I2CTransaction *)TransactionQueue;
+
+    I2CError start_segment () {
+        // A C-style cast is required to strip the volatile qualifier.
+        I2CTransaction * t = TransactionQueue;
+        CORE_UTIL_ASSERT(t != nullptr);
         if (!t) {
-            return -1;
+            return I2CError::NullTransaction;
         }
-        I2CSegment * s = t->current;
+        I2CSegment * s = t->get_current();
+        CORE_UTIL_ASSERT(s != nullptr);
         if (!s) {
-            return -1;
+            return I2CError::NullSegment;
         }
-        bool stop = (s->get_next() == nullptr) && (!t->repeated);
+        bool stop = (s->get_next() == nullptr) && (!t->repeated());
         if (s->get_dir() == I2CDirection::Transmit) {
-            i2c_transfer_asynch(&_i2c, s->get_buf(), s->get_len(), nullptr, 0, t->address,
+            i2c_transfer_asynch(&_i2c, s->get_buf(), s->get_len(), nullptr, 0, t->address(),
                 stop, (uint32_t)_handler, I2C_EVENT_ALL, _usage);
         } else {
-            i2c_transfer_asynch(&_i2c, nullptr, 0, s->get_buf(), s->get_len(), t->address,
+            i2c_transfer_asynch(&_i2c, nullptr, 0, s->get_buf(), s->get_len(), t->address(),
                 stop, (uint32_t)_handler, I2C_EVENT_ALL, _usage);
         }
-        return 0;
+        return I2CError::None;
     }
-    int start_transaction() {
-        // TODO: This needs a higher-level start/stop lock
+
+    I2CError start_transaction() {
         if (i2c_active(&_i2c)) {
-            return -1; // transaction ongoing
+            return I2CError::Busy; // transaction ongoing
         }
         mbed::util::CriticalSectionLock lock;
-        I2CTransaction * t = (I2CTransaction *)TransactionQueue;
+        // A C-style cast is required to strip the volatile qualifier.
+        I2CTransaction * t = TransactionQueue;
+        CORE_UTIL_ASSERT(t != nullptr);
         if (!t) {
-            return -1;
+            return I2CError::NullTransaction;
         }
-
-        // We want to update the frequency even if we are already the bus owners
-        i2c_frequency(&_i2c, t->hz);
-        t->current = t->root;
+        i2c_frequency(&_i2c, t->freq());
+        t->reset_current();
         return start_segment();
     }
-    int validate_transaction(I2CTransaction *t) const
+
+    I2CError validate_transaction(I2CTransaction *t) const
     {
         (void) t;
-        // TODO
-        return 0;
+        return I2CError::None;
     }
-    int power_down() {
-        // TODO
-        return 0;
+
+    I2CError power_down() {
+        return I2CError::None;
     }
-    int power_up() {
-        // TODO
-        return 0;
+
+    I2CError power_up() {
+        return I2CError::None;
     }
+
     void irq_handler() {
-        int event = i2c_irq_handler_asynch(&_i2c);
+        uint32_t event = i2c_irq_handler_asynch(&_i2c);
         process_event(event);
     }
+
 protected:
     PinName _scl;
     PinName _sda;
@@ -207,7 +210,7 @@ template <size_t N> struct HWI2CResourceManagers : public HWI2CResourceManagers<
     HWI2CResourceManager rm;
     static void irq_handler_asynch(void)
     {
-        HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(get_I2C_owner(N));
+        HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(get_i2c_owner(N));
         rm->irq_handler();
     }
     I2CResourceManager * get_rm(size_t I) {
@@ -221,12 +224,13 @@ template <size_t N> struct HWI2CResourceManagers : public HWI2CResourceManagers<
         }
     }
 };
+
 template <> struct HWI2CResourceManagers<0> {
     HWI2CResourceManagers() : rm(0, irq_handler_asynch){}
     HWI2CResourceManager rm;
     static void irq_handler_asynch(void)
     {
-        HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(get_I2C_owner(0));
+        HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(get_i2c_owner(0));
         rm->irq_handler();
     }
     I2CResourceManager * get_rm(size_t I) {
@@ -239,10 +243,14 @@ template <> struct HWI2CResourceManagers<0> {
     }
 };
 
-// TODO: Add other options for I2C Owners.
-I2CResourceManager * get_I2C_owner(size_t I)
+I2CResourceManager * get_i2c_owner(int I)
 {
-    /* Instantiate the HWI2CResourceManager */
+    // Trap a failed pinmap_merge()
+    CORE_UTIL_ASSERT_MSG(I >=0, "The scl, sda combination must exist in the peripheral pin map");
+    if (I < 0) {
+        return nullptr;
+    }
+    // Instantiate the HWI2CResourceManager
     static struct HWI2CResourceManagers<MODULES_SIZE_I2C-1> HWManagers;
     if (I < MODULES_SIZE_I2C) {
         return HWManagers.get_rm(I);
@@ -250,6 +258,26 @@ I2CResourceManager * get_I2C_owner(size_t I)
         CORE_UTIL_ASSERT(false);
         return nullptr;
     }
+    // NOTE: It should be possible to include other forms of I2C Resource manager.
+    // Internal Ref: IOTSFW-1945
+}
+
+I2CEventHandler::I2CEventHandler():_cb(), _eventmask(0) {}
+
+void I2CEventHandler::call(I2CTransaction * t, uint32_t event)
+{
+    _cb(t,event);
+}
+
+void I2CEventHandler::set(const event_callback_t &cb, uint32_t event)
+{
+    _cb = cb;
+    _eventmask = event;
+}
+
+I2CEventHandler::operator bool() const
+{
+    return _eventmask && _cb;
 }
 
 } // namespace detail
