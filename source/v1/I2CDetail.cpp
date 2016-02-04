@@ -205,14 +205,18 @@ protected:
     void (*const _handler)(void);
 };
 
-template <size_t N> struct HWI2CResourceManagers : public HWI2CResourceManagers<N-1> {
+template <size_t N>
+struct HWI2CResourceManagers : public HWI2CResourceManagers<N-1> {
+public:
     HWI2CResourceManagers() : rm(N, irq_handler_asynch){}
+private:
     HWI2CResourceManager rm;
     static void irq_handler_asynch(void)
     {
         HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(get_i2c_owner(N));
         rm->irq_handler();
     }
+public:
     I2CResourceManager * get_rm(size_t I) {
         CORE_UTIL_ASSERT(I > N);
         if (I > N) {
@@ -225,14 +229,18 @@ template <size_t N> struct HWI2CResourceManagers : public HWI2CResourceManagers<
     }
 };
 
-template <> struct HWI2CResourceManagers<0> {
+template <>
+struct HWI2CResourceManagers<0> {
+public:
     HWI2CResourceManagers() : rm(0, irq_handler_asynch){}
+private:
     HWI2CResourceManager rm;
     static void irq_handler_asynch(void)
     {
         HWI2CResourceManager *rm = static_cast<HWI2CResourceManager *>(get_i2c_owner(0));
         rm->irq_handler();
     }
+public:
     I2CResourceManager * get_rm(size_t I) {
         CORE_UTIL_ASSERT(I);
         if (I) {
