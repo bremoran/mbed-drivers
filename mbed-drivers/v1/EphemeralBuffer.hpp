@@ -81,7 +81,7 @@ public:
      * @param[in] buf the buffer pointer to duplicate
      * @param[in] len the length of the buffer to duplicate
      */
-    void set(void * buf, std::size_t len);
+    void set(void *buf, std::size_t len);
 
     /**
      * Set buffer pointer and length.
@@ -91,7 +91,7 @@ public:
      * @param[in] buf the buffer pointer to duplicate
      * @param[in] len the length of the buffer to duplicate
      */
-    void set_ephemeral(void * buf, std::size_t len);
+    void set_ephemeral(void *buf, std::size_t len);
 
     /**
      * Get a pointer to the buffer.

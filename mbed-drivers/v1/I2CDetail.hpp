@@ -90,7 +90,7 @@ public:
      * In an I2CTransaction, this allows composition of a complex I2C transfer
      * @param[in] next an I2CSegment to append to the current one
      */
-    void set_next(I2CSegment * next) {
+    void set_next(I2CSegment *next) {
         _next = next;
     }
 
@@ -266,7 +266,7 @@ protected:
      * @param[in] event the source of the current handler call
      */
     void process_event(uint32_t event);
-    void handle_event(I2CTransaction * t, uint32_t event);
+    void handle_event(I2CTransaction *t, uint32_t event);
     I2CResourceManager();
     ~I2CResourceManager();
 
@@ -281,7 +281,7 @@ I2CResourceManager * get_i2c_owner(int I);
 class I2CEventHandler {
 public:
     I2CEventHandler();
-    void call(I2CTransaction * t, uint32_t event);
+    void call(I2CTransaction *t, uint32_t event);
     void set(const event_callback_t &cb, uint32_t event);
     operator bool() const;
 protected:

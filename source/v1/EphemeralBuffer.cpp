@@ -1,5 +1,5 @@
 /* mbed Microcontroller Library
- * Copyright (c) 2006-2015 ARM Limited
+ * Copyright (c) 2016 ARM Limited
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,14 +21,14 @@ namespace v1 {
 void EphemeralBuffer::set(const Buffer & b) {
     set(b.buf,b.length);
 }
-void EphemeralBuffer::set(void * buf, size_t len) {
+void EphemeralBuffer::set(void *buf, size_t len) {
     _ptrLen = len;
     _dataPtr = buf;
 }
 void EphemeralBuffer::set_ephemeral(const Buffer & b) {
     set_ephemeral(b.buf,b.length);
 }
-void EphemeralBuffer::set_ephemeral(void * buf, size_t len) {
+void EphemeralBuffer::set_ephemeral(void *buf, size_t len) {
     if (len <= sizeof(_data)) {
         _ephemeral = true;
         _len = len;

@@ -93,7 +93,7 @@ void I2CResourceManager::process_event(uint32_t event) {
     }
 }
 
-void I2CResourceManager::handle_event(I2CTransaction * t, uint32_t event) {
+void I2CResourceManager::handle_event(I2CTransaction *t, uint32_t event) {
     t->process_event(event);
     // This happens after the callbacks have all been called
     t->get_issuer()->free(t);
@@ -264,7 +264,7 @@ I2CResourceManager * get_i2c_owner(int I)
 
 I2CEventHandler::I2CEventHandler():_cb(), _eventmask(0) {}
 
-void I2CEventHandler::call(I2CTransaction * t, uint32_t event)
+void I2CEventHandler::call(I2CTransaction *t, uint32_t event)
 {
     _cb(t,event);
 }

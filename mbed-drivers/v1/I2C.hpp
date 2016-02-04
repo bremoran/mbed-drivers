@@ -1,5 +1,5 @@
 /* mbed Microcontroller Library
- * Copyright (c) 2006-2015 ARM Limited
+ * Copyright (c) 2006-2016 ARM Limited
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -93,7 +93,7 @@ public:
      *
      * @param[in] address set the I2C destination address
      */
-    I2CTransaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer);
+    I2CTransaction(uint16_t address, uint32_t hz, bool irqsafe, I2C *issuer);
     ~I2CTransaction();
 
     detail::I2CSegment * new_segment();
@@ -108,7 +108,7 @@ public:
      * Set the next transaction in the queue
      * This is an atomic operation that will append to the queue.
      */
-    void append(I2CTransaction * t);
+    void append(I2CTransaction *t);
 
     /**
      * Forwards the irq-context callback to the segment
@@ -242,7 +242,7 @@ public:
      *  @param scl I2C clock line pin
      */
     I2C(PinName sda, PinName scl);
-    I2C(PinName sda, PinName scl, mbed::util::PoolAllocator * TransactionPool, mbed::util::PoolAllocator * SegmentPool);
+    I2C(PinName sda, PinName scl, mbed::util::PoolAllocator *TransactionPool, mbed::util::PoolAllocator *SegmentPool);
 
     /** Set the frequency of the I2C interface
      *
@@ -281,13 +281,13 @@ public:
 
     detail::I2CSegment * new_segment(bool irqsafe);
 
-    void free(I2CTransaction * t);
-    void free(detail::I2CSegment * s, bool irqsafe);
+    void free(I2CTransaction *t);
+    void free(detail::I2CSegment *s, bool irqsafe);
 
 protected:
     friend TransferAdder;
-    I2CError post_transaction(I2CTransaction * t);
-    I2CTransaction * new_transaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer);
+    I2CError post_transaction(I2CTransaction *t);
+    I2CTransaction * new_transaction(uint16_t address, uint32_t hz, bool irqsafe, I2C *issuer);
 
     int _hz;
     detail::I2CResourceManager * _owner;

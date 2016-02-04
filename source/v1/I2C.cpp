@@ -1,5 +1,5 @@
 /* mbed Microcontroller Library
- * Copyright (c) 2006-2015 ARM Limited
+ * Copyright (c) 2006-2016 ARM Limited
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@
 namespace mbed_drivers {
 using namespace mbed;
 namespace v1 {
-I2CTransaction::I2CTransaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer):
+I2CTransaction::I2CTransaction(uint16_t address, uint32_t hz, bool irqsafe, I2C *issuer):
     _next(nullptr),
     _address(address),
     _root(nullptr),
@@ -44,7 +44,7 @@ I2CTransaction::~I2CTransaction() {
     }
 }
 
-void I2CTransaction::append(I2CTransaction * t) {
+void I2CTransaction::append(I2CTransaction *t) {
     CORE_UTIL_ASSERT(t != nullptr);
     if (!t) {
         return;
@@ -129,7 +129,7 @@ I2C::TransferAdder I2C::transfer_to(int address) {
     return t;
 }
 
-I2CError I2C::post_transaction(I2CTransaction * t) {
+I2CError I2C::post_transaction(I2CTransaction *t) {
     if (!_owner) {
         return I2CError::InvalidMaster;
     }
@@ -153,7 +153,7 @@ detail::I2CSegment * I2C::new_segment(bool irqsafe) {
     return newseg;
 }
 
-I2CTransaction * I2C::new_transaction(uint16_t address, uint32_t hz, bool irqsafe, I2C * issuer)
+I2CTransaction * I2C::new_transaction(uint16_t address, uint32_t hz, bool irqsafe, I2C *issuer)
 {
     I2CTransaction * t;
     if (irqsafe) {
@@ -170,7 +170,7 @@ I2CTransaction * I2C::new_transaction(uint16_t address, uint32_t hz, bool irqsaf
     }
     return t;
 }
-void I2C::free(detail::I2CSegment * s, bool irqsafe)
+void I2C::free(detail::I2CSegment *s, bool irqsafe)
 {
     if (irqsafe) {
         s->~I2CSegment();
@@ -179,7 +179,7 @@ void I2C::free(detail::I2CSegment * s, bool irqsafe)
         delete s;
     }
 }
-void I2C::free(I2CTransaction * t)
+void I2C::free(I2CTransaction *t)
 {
     if (t->is_irqsafe()) {
         t->~I2CTransaction();
