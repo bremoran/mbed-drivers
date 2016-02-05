@@ -178,7 +178,10 @@ public:
 
     I2CError validate_transaction(I2CTransaction *t) const
     {
-        (void) t;
+        uint16_t address = t->address();
+        if (address >= 1<<10) {
+            return I2CError::InvalidAddress;
+        }
         return I2CError::None;
     }
 

@@ -42,30 +42,65 @@ enum class I2CError;
  * \file
  * \brief A generic interface for I2C peripherals
  *
- * The I2C class interfaces with an I2C Resource manager in order to initiate Transactions
- * and receive events. The I2CTransaction class encapsulates all I2C transaction parameters.
- * The I2CResourceManager class is a generic interface for implementing I2C resource managers.
- * This will allow for additional classes of I2C device, for example, a bitbanged I2C master.
+ * The I2C class interfaces with an I2C Resource manager in order to initiate Transactions and receive events. The
+ * I2CTransaction class encapsulates all I2C transaction parameters. The I2CResourceManager class is a generic interface
+ * for implementing I2C resource managers. This will allow for additional classes of I2C device, for example, a
+ * bitbanged I2C master.
  *
- * I2C Resource managers are instantiated statically and initialized during global init.
- * There is one Resource Manager per logical port. Logical ports could consist of:
+ * # I2C
+ * I2C encapsulates an I2C master. The physical I2C master to use is selected via the pins provided to the constructor.
+ * The ```frequency()``` API sets the default frequency for transactions issued from the I2C object. This is used for
+ * each transaction issued by I2C unless overridden when creating the transaction. Transactions are initiated by calling
+ * ```transfer_to()``` or ```transfer_to_irqsafe()```. Both of these APIs create an instance of the ```TransferAdder```
+ * helper class.
  *
- * * Onchip I2C controllers
+ * # TransferAdder
+ * The TransferAdder class allows convenient construction of complex transfers.
+ *
+ * The ```frequency()``` member overrides the default frequency set by the issuing I2C object.
+ *
+ * The ```on()``` member allows setting up to 4 event handlers, each with a corresponding event mask.
+ *
+ * The ```tx()``` members add a buffer to send to the transfer.
+ *
+ * The ```rx()``` members add a buffer to receive into to the transfer. There is a special case of ```rx()```, which
+ * doesn't use a normal buffer. When ```rx(size_t)``` is called with a size of less than 8 bytes, the underlying
+ * EphermeralBuffer is placed in ephemeral mode. This means that no preallocated receive buffer is needed, instead the
+ * data is packed directly into the EphemeralBuffer. This has a side-effect that the data will be freed once the last
+ * event handler has exited, so if the data must be retained, it should be copied out.
+ *
+ * The ```apply()``` method validates the transfer and adds it to the transaction queue of the I2CResourceManager. It
+ * returns the result of validation.
+ *
+ * # I2C Resource Managers
+ * I2C Resource managers are instantiated statically and initialized during global init. There is one Resource Manager
+ * per logical I2C master. Logical I2C masters could consist of:
+ *
+ * * Onchip I2C masters
  * * I2C Bridges (SPI->I2C bridge, I2C->I2C bridge, etc.)
  * * Bit banged I2C
  * * Bit banged I2C over SPI GPIO expander
  * * More...
  *
- * Currently only onchip I2C controllers are supported.
+ * Currently only onchip I2C masters are supported.
  *
- * ## Constructing I2C transactions
+ * # I2C transactions
+ * An I2CTransaction contains a list of event handlers and their event masks, an I2C address, an operating frequency,
+ * a repeated start flag, and zero or more I2CSegments. Zero-segment Transactions are explicitly supported since
+ * they are useful in connected device discovery (pings).
+ *
+ * # I2C Segments
+ * An I2CSegment is a wrapper around an EphemeralBuffer. It provides an I2C transfer direction (read or write) and an
+ * optional callback to execute in IRQ context. I2CSegments also provide a chaining pointer so that they can perform
+ * sequential or scatter/gather operations.
+ *
+ * # Constructing I2C transactions
  *
  * ```C++
- * void doneCB(bool dir, EphemeralBuffer buf, uint32_t event) {
+ * void doneCB(bool dir, I2CTransaction *t, uint32_t event) {
  *     // Do something
  * }
  * I2C i2c0(sda, scl);
- * I2C i2c1(sda, scl);
  * void app_start (int, char **) {
  *     uint8_t cmd[2] = {0xaa, 0x55};
  *     i2c0.transfer_to(addr).tx(cmd,2).rx(4).on(I2C_EVENT_ALL, doneCB);
@@ -77,7 +112,7 @@ using namespace mbed;
 namespace v1 {
 // Forward declaration of I2C
 class I2C;
-enum class I2CError {None, InvalidMaster, PinMismatch, Busy, NullTransaction, NullSegment};
+enum class I2CError {None, InvalidMaster, PinMismatch, Busy, NullTransaction, NullSegment, MissingPoolAllocator, InvalidAddress, BufferSize};
 /**
  * A Transaction container for I2C
  */
@@ -197,7 +232,7 @@ protected:
      * The first I2CSegment in the transaction
      *
      * This is a helper field for building or processing I2C transactions.
-     * It allows the I2CTransaction to easily locate the end of the queue when
+     * It allows the Transaction to easily locate the end of the queue when
      * composing the transaction and, equally, the currently transferring segment
      * while processing the transaction.
      *
@@ -254,6 +289,7 @@ public:
         friend I2C;
     protected:
         TransferAdder(I2C *i2c, int address, uint32_t hz, bool irqsafe);
+        detail::I2CSegment * new_segment(detail::I2CDirection d);
     public:
         TransferAdder & frequency(uint32_t hz);
         TransferAdder & on(uint32_t event, const event_callback_t & cb);

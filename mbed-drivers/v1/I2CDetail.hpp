@@ -42,7 +42,7 @@ typedef mbed::util::FunctionPointer2<void, I2CTransaction *, uint32_t> event_cal
 /**
  * @brief A class that contains the information requires for an individial chunk of an I2C transaction
  *
- * Transactions can be composed of several segments, each of which can be either transmit or receive segments. The
+ * I2CTransaction can be composed of several segments, each of which can be either transmit or receive segments. The
  * segments are formed into a linked list through the _next pointer. Each segment can have an associated callback that
  * executes in IRQ context. This allows for I2C transactions to be modified on the fly. For example, it might be useful
  * in some protocols to read a length, then transfer the number of bytes specified by the length.

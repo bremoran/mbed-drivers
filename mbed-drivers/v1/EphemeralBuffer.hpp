@@ -117,6 +117,10 @@ public:
      */
     bool is_ephemeral() const;
 
+    /**
+     * A constant that indicates the maximum size of the buffer in ephemeral mode.
+     */
+    static constexpr size_t ephemeralSize = sizeof(_data);
 protected:
     union {
         struct {

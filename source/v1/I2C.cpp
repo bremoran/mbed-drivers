@@ -128,6 +128,10 @@ I2C::TransferAdder I2C::transfer_to(int address) {
     TransferAdder t(this, address, _hz, false);
     return t;
 }
+I2C::TransferAdder I2C::transfer_to_irqsafe(int address) {
+    TransferAdder t(this, address, _hz, true);
+    return t;
+}
 
 I2CError I2C::post_transaction(I2CTransaction *t) {
     if (!_owner) {
@@ -193,15 +197,25 @@ void I2C::free(I2CTransaction *t)
 I2C::TransferAdder::TransferAdder(I2C *i2c, int address, uint32_t hz, bool irqsafe) :
     _i2c(i2c), _posted(false), _irqsafe(irqsafe), _rc(I2CError::None)
 {
+    CORE_UTIL_ASSERT(!irqsafe || (irqsafe && i2c->TransactionPool && i2c->SegmentPool));
+    if (irqsafe && (!i2c->TransactionPool || !i2c->SegmentPool)) {
+        _rc = I2CError::MissingPoolAllocator;
+        _posted = true;
+        return;
+    }
     _xact = i2c->new_transaction(address, hz, irqsafe, i2c);
     CORE_UTIL_ASSERT(_xact != nullptr);
     if (!_xact) {
+        _rc = I2CError::NullTransaction;
+        _posted = true;
         return;
     }
 }
 I2C::TransferAdder & I2C::TransferAdder::repeated_start()
 {
-    _xact->repeated(true);
+    if (_rc == I2CError::None) {
+        _xact->repeated(true);
+    }
     return *this;
 }
 I2CError I2C::TransferAdder::apply()
@@ -213,12 +227,16 @@ I2CError I2C::TransferAdder::apply()
 }
 I2C::TransferAdder & I2C::TransferAdder::on(uint32_t event, const event_callback_t & cb)
 {
-    _xact->add_event(event, cb);
+    if (_rc == I2CError::None) {
+        _xact->add_event(event, cb);
+    }
     return *this;
 }
 I2C::TransferAdder & I2C::TransferAdder::frequency(uint32_t hz)
 {
-    _xact->freq(hz);
+    if (_rc == I2CError::None) {
+        _xact->freq(hz);
+    }
     return *this;
 }
 
@@ -228,34 +246,58 @@ I2C::TransferAdder::~TransferAdder()
     apply();
 }
 
+detail::I2CSegment * I2C::TransferAdder::new_segment(detail::I2CDirection d) {
+    detail::I2CSegment * s = nullptr;
+    if (_rc == I2CError::None && _xact) {
+        s = _xact->new_segment();
+        CORE_UTIL_ASSERT(s != nullptr);
+        if (!s) {
+            _rc = I2CError::NullSegment;
+        } else {
+            s->set_dir(d);
+        }
+    }
+    return s;
+}
+
 I2C::TransferAdder & I2C::TransferAdder::tx(void *buf, size_t len) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set(buf,len);
-    s->set_dir(detail::I2CDirection::Transmit);
+    detail::I2CSegment * s = new_segment(detail::I2CDirection::Transmit);
+    if (s) {
+        s->set(buf,len);
+    }
     return *this;
 }
 I2C::TransferAdder & I2C::TransferAdder::tx(const Buffer & buf) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set(buf);
-    s->set_dir(detail::I2CDirection::Transmit);
+    detail::I2CSegment * s = new_segment(detail::I2CDirection::Transmit);
+    if (s) {
+        s->set(buf);
+    }
     return *this;
 }
 I2C::TransferAdder & I2C::TransferAdder::rx(void *buf, size_t len) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set(buf,len);
-    s->set_dir(detail::I2CDirection::Receive);
+    detail::I2CSegment * s = new_segment(detail::I2CDirection::Receive);
+    if (s) {
+        s->set(buf,len);
+    }
     return *this;
 }
 I2C::TransferAdder & I2C::TransferAdder::rx(const Buffer & buf) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set(buf);
-    s->set_dir(detail::I2CDirection::Receive);
+    detail::I2CSegment * s = new_segment(detail::I2CDirection::Receive);
+    if (s) {
+        s->set(buf);
+    }
     return *this;
 }
 I2C::TransferAdder & I2C::TransferAdder::rx(size_t len) {
-    detail::I2CSegment * s = _xact->new_segment();
-    s->set_ephemeral(nullptr,len);
-    s->set_dir(detail::I2CDirection::Receive);
+    if(len > EphermeralBuffer::ephemeralSize) {
+        _rc = I2CError::BufferSize;
+        _posted = true;
+    } else {
+        detail::I2CSegment * s = new_segment(detail::I2CDirection::Receive);
+        if (s) {
+            s->set_ephemeral(nullptr,len);
+        }
+    }
     return *this;
 }
 } // namespace v1

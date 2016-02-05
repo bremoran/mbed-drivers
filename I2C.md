@@ -1,3 +1,4 @@
+
 # Asynchronous I2C
 I2C is a 2-wire serial bus protocol, designed to provide easy communication between peripherals on the same circuit board.
 
